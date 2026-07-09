@@ -27,22 +27,22 @@ vcom -2008 tb_two_button.vhd
 vsim -voptargs=+acc work.tb_two_button
 
 # --- Dalga penceresi ---
-add wave -divider "ZAMAN TABANI (ortak SysTick)"
-add wave -unsigned -label now_ms /tb_two_button/dut/now_ms
+add wave -divider "systick (ortak, C'deki global)"
+add wave -unsigned -label systick /tb_two_button/dut/systick
 
-add wave -divider "BUTON 1  (preset 100 ms)"
-add wave -label btn1_raw          /tb_two_button/dut/btn1_raw
-add wave -label btn1_sync         /tb_two_button/dut/btn1_sync
-add wave -unsigned -label since1  /tb_two_button/dut/u_ton1/since_reg
-add wave -label btn1_on_pressed   /tb_two_button/dut/btn1_on_pressed
-add wave -label btn1_pulse        /tb_two_button/dut/btn1_pulse
+add wave -divider "BUTON 1  (timeout 100 ms)"
+add wave -label btn1_raw            /tb_two_button/dut/btn1_raw
+add wave -label btn1_sync           /tb_two_button/dut/btn1_sync
+add wave -unsigned -label since1    /tb_two_button/dut/u_ton1/since_reg
+add wave -label btn1_out            /tb_two_button/dut/btn1_out
+add wave -label btn1_out_pulse      /tb_two_button/dut/btn1_out_pulse
 
-add wave -divider "BUTON 2  (preset 150 ms)"
-add wave -label btn2_raw          /tb_two_button/dut/btn2_raw
-add wave -label btn2_sync         /tb_two_button/dut/btn2_sync
-add wave -unsigned -label since2  /tb_two_button/dut/u_ton2/since_reg
-add wave -label btn2_on_pressed   /tb_two_button/dut/btn2_on_pressed
-add wave -label btn2_pulse        /tb_two_button/dut/btn2_pulse
+add wave -divider "BUTON 2  (timeout 150 ms)"
+add wave -label btn2_raw            /tb_two_button/dut/btn2_raw
+add wave -label btn2_sync           /tb_two_button/dut/btn2_sync
+add wave -unsigned -label since2    /tb_two_button/dut/u_ton2/since_reg
+add wave -label btn2_out            /tb_two_button/dut/btn2_out
+add wave -label btn2_out_pulse      /tb_two_button/dut/btn2_out_pulse
 
 # stim ~21 us'de biter; 22 us hepsini kapsar (saat serbest, 'run -all' kullanma)
 run 22 us
