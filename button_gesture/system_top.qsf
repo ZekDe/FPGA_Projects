@@ -1,0 +1,64 @@
+# ==============================================================================
+#  system_top.qsf  -- Quartus ayar dosyasi (DE0-Nano-SoC)
+#
+#  KULLANIM (iki yoldan biri):
+#  A) Yeni Quartus projesi ac, Family=Cyclone V, Device=5CSEMA4U23C6 sec.
+#     Sonra: Assignments -> Import Assignments -> bu dosyayi sec.
+#  B) Mevcut First_VHDL_Proj.qsf'in icine bu dosyanin icerigini kopyala.
+#
+#  Bu dosya sadece kritik ayarlari icerir: cihaz, dosyalar, pin atamalari.
+# ==============================================================================
+
+# --- CIHAZ ---
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEMA4U23C6
+
+# --- TOP LEVEL ENTITY ---
+set_global_assignment -name TOP_LEVEL_ENTITY system_top
+
+# --- VHDL DOSYALARI (bagimlilik sirasinda, alt bloklar once) ---
+#    Dikkat: yollar bu .qsf'in bulundugu quartus/ klasoruna gore VERILDI.
+#    quartus/ -> src/ icin:  ../src/
+#    quartus/ -> MyLibs/ icin: ../../MyLibs/
+set_global_assignment -name VHDL_FILE ../../MyLibs/synchronizer.vhd
+set_global_assignment -name VHDL_FILE ../../MyLibs/time_base_ms.vhd
+set_global_assignment -name VHDL_FILE ../../MyLibs/ton.vhd
+set_global_assignment -name VHDL_FILE ../../MyLibs/edge_detector.vhd
+set_global_assignment -name VHDL_FILE ../../MyLibs/button_gesture.vhd
+set_global_assignment -name VHDL_FILE ../../MyLibs/led_pulse.vhd
+set_global_assignment -name VHDL_FILE ../src/system_top.vhd
+
+# --- SDC (timing constraint) ---
+set_global_assignment -name SDC_FILE system_top.sdc
+
+# --- PIN ATAMALARI (DE0-Nano-SoC rev C veya uyumlu) ---
+set_location_assignment PIN_V11  -to CLOCK_50
+set_location_assignment PIN_AH17 -to KEY[0]
+set_location_assignment PIN_L10  -to SW[0]
+set_location_assignment PIN_W15  -to LED[0]
+set_location_assignment PIN_AA24 -to LED[1]
+set_location_assignment PIN_V16  -to LED[2]
+set_location_assignment PIN_V15  -to LED[3]
+set_location_assignment PIN_AF26 -to LED[4]
+set_location_assignment PIN_AE26 -to LED[5]
+set_location_assignment PIN_Y16  -to LED[6]
+set_location_assignment PIN_AA23 -to LED[7]
+
+# --- IO STANDARD (3.3V LVTTL) ---
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_50
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[5]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[6]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[7]
+
+# --- GENEL AYARLAR ---
+set_global_assignment -name MIN_CORE_JUNCTION_TEMP 0
+set_global_assignment -name MAX_CORE_JUNCTION_TEMP 85
+set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
+set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
