@@ -10,11 +10,16 @@
 --
 --  SIM HIZ HILESI: time_base_ms'e G_CLK_HZ=1000 verilince 1 clock = 1 ms.
 --  clk periyodu 20 ns -> 1 ms = 20 ns. Yani debounce_ms=20 -> 400 ns'de dolar.
---  Bu sayede 100 ms'lik senaryolar us seviyesinde simule edilir.
+--  Bu sayede 100 ms'lik senaryalar us seviyesinde simule edilir.
 --
 --  CONFIG (C'deki struct alanlari; sim icin kisa degerler):
 --    debounce_ms=20, long_press_ms=300, multi_click_window_ms=200,
 --    repeat_start_ms=100, repeat_end_ms=20, repeat_ramp_ms=500
+--
+--  ONEMLI: repeat_ramp_ms=500 (2^n DEGIL). Bu, pipelined divider'in gercek
+--  division yaptigini test eder (eski combinational shift workaround degil).
+--  Divider 32 cycle latency'li -> S_LONG_HELD'ye girdikten 32 ms sonra gercek
+--  period degeri gelir. O zamana kadar period_reg = repeat_start_ms (initial).
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
