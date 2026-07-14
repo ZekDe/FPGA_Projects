@@ -18,7 +18,10 @@
 --    LED[6] : LONG_RELEASED      -> 50 ms flash (buton birakildi)
 --    LED[7] : buton basili       -> seviye (debug)
 --
---  CONFIG (kart gercegi icin makul degerler):
+--  CONFIG (kart gercegi icin makul degerler - 2^n KISITLAMASI YOK):
+--    (Pipelined divider sayesinde combinational division timing sorunu cozuldu.
+--     Eskiden 2^n seciliyordu ki division shift_right olarak sentezlensin;
+--     artik 32-stage pipelined divider gercek bolme yapiyor.)
 --    debounce_ms            = 20    (mekanik bounce icin yeterli)
 --    long_press_ms          = 1000  (1 sn basili tutunca LONG)
 --    multi_click_window_ms  = 400   (double click icin makul pencere)
@@ -64,18 +67,24 @@ architecture rtl of system_top is
     -- Ileride: bu sabitler yerine AXI-Lite register'dan yazilan signal'ler
     -- baglanabilir (Faz 5). Su an constants ile basliyoruz.
     ---------------------------------------------------------------------------
-    -- Tum zamanlama sabitleri 2^n secildi. Sebep:
-    --   1) calc_period icindeki division (v_product / ramp_ms) Quartus tarafindan
-    --      shift_right(v_product, n) olarak sentezlenir -> hic division donanimi yok.
-    --   2) "Thinking in hardware" aliskanligi: counter/prescaler/ic-bolucu icin
-    --      2^n sayilar timing ve kaynak acisindan ucretsuz (sadece wiring).
-    --   3) Ileride baska bir bolme yeri eklenirse yine sorun cikmamasi icin.
-    constant C_DEBOUNCE_MS           : unsigned(C_WIDTH-1 downto 0) := to_unsigned(64,   C_WIDTH);  -- 2^6  = 64  ms
-    constant C_LONG_PRESS_MS         : unsigned(C_WIDTH-1 downto 0) := to_unsigned(1024, C_WIDTH);  -- 2^10 = ~1  sn
-    constant C_MULTI_CLICK_WINDOW_MS : unsigned(C_WIDTH-1 downto 0) := to_unsigned(512,  C_WIDTH);  -- 2^9  = 512 ms
-    constant C_REPEAT_START_MS       : unsigned(C_WIDTH-1 downto 0) := to_unsigned(1024, C_WIDTH);  -- 2^10 = ~1  sn
-    constant C_REPEAT_END_MS         : unsigned(C_WIDTH-1 downto 0) := to_unsigned(128,  C_WIDTH);  -- 2^7  = 128 ms
-    constant C_REPEAT_RAMP_MS        : unsigned(C_WIDTH-1 downto 0) := to_unsigned(4096, C_WIDTH);  -- 2^12 = ~4  sn
+    -- NOT: onceki versiyonda tum sabitler 2^n seciliyordu, cunku period hesabi
+    -- COMBINATIONAL division (v_product / ramp_ms) yapiyordu ve 2^n ancak
+    -- shift_right olarak sentezleniyordu. Ancak 50 MHz'de bu kombinasyonel yol
+    -- timing slack negatif uretiyordu (LPM_DIVIDE cok yavas).
+    --
+    -- Faz 6 on-adiminda pipelined divider (divider_pipelined.vhd) entegre
+    -- edildi: 32-stage pipeline, 32 cycle latency, 1/cycle throughput, vendor
+    -- bagimsiz, DO-254 audit'e uygun tam transparan VHDL. Artik division
+    -- KAYITLI stage'lerde calistigi icin 2^n kısıtlaması YOKTUR. Kart gercegi
+    -- icin makul (2^n olmayan) degerler kullanabiliriz. Simulasyonda
+    -- repeat_ramp_ms=500 ile dogrulandi (divider gercek bolme yapiyor).
+    ---------------------------------------------------------------------------
+    constant C_DEBOUNCE_MS           : unsigned(C_WIDTH-1 downto 0) := to_unsigned(20,   C_WIDTH);  -- 20   ms (mekanik bounce)
+    constant C_LONG_PRESS_MS         : unsigned(C_WIDTH-1 downto 0) := to_unsigned(1000, C_WIDTH);  -- 1    sn (long press threshold)
+    constant C_MULTI_CLICK_WINDOW_MS : unsigned(C_WIDTH-1 downto 0) := to_unsigned(400,  C_WIDTH);  -- 400  ms (double-click penceresi)
+    constant C_REPEAT_START_MS       : unsigned(C_WIDTH-1 downto 0) := to_unsigned(500,  C_WIDTH);  -- 500  ms (LONG sonrasi ilk repeat)
+    constant C_REPEAT_END_MS         : unsigned(C_WIDTH-1 downto 0) := to_unsigned(100,  C_WIDTH);  -- 100  ms (ivmelenme sonu, en hizli)
+    constant C_REPEAT_RAMP_MS        : unsigned(C_WIDTH-1 downto 0) := to_unsigned(3000, C_WIDTH);  -- 1    sn (start->end linear ramp)
 
     ---------------------------------------------------------------------------
     -- button_gesture cikislari
