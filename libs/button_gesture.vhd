@@ -102,7 +102,8 @@ architecture rtl of button_gesture is
     -- S_LONG_HELD'ye giriste period_reg = repeat_start_ms (initial, p_state'te set).
     --------------------------------------------------------------------------
     signal delta         : unsigned(31 downto 0);   -- |start_ms - end_ms| (comb)
-    signal elapsed_calc  : unsigned(31 downto 0);   -- now_ms - long_started_at (comb)
+    signal elapsed_raw   : unsigned(31 downto 0);   -- now_ms - long_started_at (comb, clamp'onmemis)
+    signal elapsed_calc  : unsigned(31 downto 0);   -- elapsed_raw, repeat_ramp_ms ile clamp'lenmis
     signal product_64    : unsigned(63 downto 0);   -- delta * elapsed (comb, 64-bit)
     signal div_start     : std_logic;               -- divider start pulse (comb)
     signal div_dividend  : unsigned(31 downto 0);   -- divider'a giden (product alt 32 bit)
@@ -130,9 +131,16 @@ begin
     --------------------------------------------------------------------------
     -- COMBINATIONAL HESAPLAMALAR (delta, elapsed, product, div_start)
     --------------------------------------------------------------------------
-    -- elapsed: S_LONG_HELD'deyken long baslangicina kadar gecen sure
-    elapsed_calc <= now_ms - long_started_at when state = S_LONG_HELD
-                    else (others => '0');
+    -- elapsed: S_LONG_HELD'deyken long baslangicina kadar gecen sure.
+    --   C CLAMP (satir 104): elapsed >= repeat_ramp_ms ise ramp bitmistir,
+    --   period = end_ms'de sabit kalmali. elapsed'i repeat_ramp_ms ile
+    --   clamp'lersek dividend (delta*elapsed_clamped) <= delta*ramp_ms olur,
+    --   quotient <= delta olur, period >= end_ms olur. Underflow IMKANSIZ.
+    --   Ramp bitince dividend degismez -> quotient degismez -> period SABIT.
+    elapsed_raw   <= now_ms - long_started_at when state = S_LONG_HELD
+                     else (others => '0');
+    elapsed_calc  <= elapsed_raw when elapsed_raw <= repeat_ramp_ms
+                     else repeat_ramp_ms;
 
     -- delta: |start_ms - end_ms| (mutlak deger)
     delta <= repeat_start_ms - repeat_end_ms when repeat_start_ms >= repeat_end_ms
@@ -141,7 +149,8 @@ begin
     -- product: delta * elapsed (numeric_std auto-widen 32x32 -> 64 bit)
     product_64 <= delta * elapsed_calc;
 
-    -- divider'a alt 32 bit (taşma yok: delta*elapsed < 2^32 pratikte)
+    -- divider'a alt 32 bit (clamp sayesinde tasma garanti yok: delta<2^16,
+    -- ramp_ms<2^16 oldugu surece delta*ramp_ms < 2^32)
     div_dividend <= product_64(31 downto 0);
 
     -- divider start: sadece S_LONG_HELD'de ve repeat aktifken
@@ -336,6 +345,15 @@ begin
                         -- once guncelle, sonra karsilastir -> yeni period bir
                         -- sonraki tick'ten itibaren gecerli. (period_reg artik
                         -- TEK process'ten - p_period_reg'a driver cakismasi yok.)
+                        --
+                        -- C CLAMP (satir 104-106): elapsed >= ramp_ms ise period =
+                        -- end_ms'de SABITLENIR, ramp bitince ivme durur, end_ms
+                        -- periyoduyla sonsuza kadar tekrarlar. Bu clamp
+                        -- dividend (delta*elapsed) ramp_ms*delta'ya clamp'lenerek
+                        -- SAGLANIR: boylece quotient asla delta'yi gecemez, dolayisiyla
+                        -- (start - quotient) asla end'in altina inemez. Underflow
+                        -- IMKANSIZ. (Combinational div versiyonunda da ayni sekilde
+                        -- elapsed clamp'leniyordu - birebir C davranisi.)
                         if div_valid = '1' then
                             if repeat_start_ms >= repeat_end_ms then
                                 period_reg <= repeat_start_ms - div_quotient;
