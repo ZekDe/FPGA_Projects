@@ -85,49 +85,30 @@ architecture rtl of button_gesture is
     type state_t is (S_IDLE, S_PRESSED, S_WINDOW_WAIT, S_LONG_HELD, S_IGNORE);
 
     --------------------------------------------------------------------------
-    -- calc_period: repeat ramp periyot hesabi (C satir 100-118)
-    --   Verilen elapsed suresine gore start_ms -> end_ms arasinda dogrusal
-    --   interpolasyon ile guncel periyodu hesaplar. Combinational function;
-    --   hem p_state hem p_outputs tarafindan CAGRILABILIR (duplication yok).
-    --
-    --   ONEMLI: ramp suresi HARDCODED 2^12 = 4096 ms. Sebep: onceki versiyonda
-    --   ramp_ms function parametresi idi, Quartus bunun constant oldugunu
-    --   (4096) constant-propagate edemedi ve LPM_DIVIDE sentezledi. LPM_DIVIDE
-    --   50 MHz combinational -> timing slack negatif -> calc_period glitch'li
-    --   degerler uretti -> LED[5] "parazit titremesi".
-    --   Cozum: ramp_ms parametresi kaldirildi, shift_right(v_product, 12)
-    --   kullanildi. shift_right = 0 lojik (bit secimi), division yok.
-    --
-    --   Ileride AXI-Lite ile runtime ramp config istenirse: LPM_DIVIDE IP
-    --   (pipelined) kullanilip ramp_ms tekrar parametre yapilabilir.
+    -- PIPED DIVIDER entegrasyonu
     --------------------------------------------------------------------------
-    function calc_period(
-        elapsed  : unsigned(31 downto 0);
-        start_ms : unsigned(31 downto 0);
-        end_ms   : unsigned(31 downto 0)
-    ) return unsigned is
-        variable v_delta32 : unsigned(31 downto 0);
-        variable v_product : unsigned(63 downto 0);
-    begin
-        if elapsed >= to_unsigned(4096, 32) then
-            -- ramp gecildi -> en hizli periyot
-            return end_ms;
-        elsif start_ms >= end_ms then
-            -- hizlanma: start > end, period azaliyor
-            v_delta32 := start_ms - end_ms;        -- 32 bit
-            v_product := v_delta32 * elapsed;      -- 32x32 -> 64 bit (auto-widening)
-            return resize(
-                       resize(start_ms, 64) - shift_right(v_product, 12),  -- /4096
-                       32);
-        else
-            -- yavaslama: start < end (nadir)
-            v_delta32 := end_ms - start_ms;
-            v_product := v_delta32 * elapsed;
-            return resize(
-                       resize(start_ms, 64) + shift_right(v_product, 12),  -- /4096
-                       32);
-        end if;
-    end function calc_period;
+    -- Onceki versiyonda calc_period COMBINATIONAL function idi. 50 MHz'de
+    -- timing slack negatif -> glitch'li period -> LED[5] parazit titremesi.
+    -- Cozum: pipelined divider (vendor-bagimsiz, MyLibs/divider_pipelined).
+    --
+    -- Hesap: period = start_ms +/- (delta * elapsed) / ramp_ms
+    --   delta = |start_ms - end_ms|
+    --   elapsed = now_ms - long_started_at
+    --   delta * elapsed = 64-bit carpim (numeric_std auto-widening)
+    --   divider'a alt 32 bit verilir (pratikte tasma yok: delta<2^16, elapsed<2^16)
+    --
+    -- Divider 32 cycle latency'li. period_reg divider valid pulse geldikce
+    -- guncellenir (S_LONG_HELD icinde, p_state tarafindan - TEK driver).
+    -- S_LONG_HELD'ye giriste period_reg = repeat_start_ms (initial, p_state'te set).
+    --------------------------------------------------------------------------
+    signal delta         : unsigned(31 downto 0);   -- |start_ms - end_ms| (comb)
+    signal elapsed_calc  : unsigned(31 downto 0);   -- now_ms - long_started_at (comb)
+    signal product_64    : unsigned(63 downto 0);   -- delta * elapsed (comb, 64-bit)
+    signal div_start     : std_logic;               -- divider start pulse (comb)
+    signal div_dividend  : unsigned(31 downto 0);   -- divider'a giden (product alt 32 bit)
+    signal div_valid     : std_logic;               -- divider valid pulse
+    signal div_quotient  : unsigned(31 downto 0);   -- divider cikisi (delta*elapsed/ramp)
+    signal period_reg    : unsigned(31 downto 0);   -- guncel period (registered)
 
     signal state           : state_t := S_IDLE;     -- FSM durumu (registered)
     signal raw_sync        : std_logic;             -- 2-FF sync cikisi (synchronizer'dan)
@@ -145,6 +126,43 @@ architecture rtl of button_gesture is
     signal last_repeat     : unsigned(31 downto 0) := (others => '0');  -- C: last_repeat
 
 begin
+
+    --------------------------------------------------------------------------
+    -- COMBINATIONAL HESAPLAMALAR (delta, elapsed, product, div_start)
+    --------------------------------------------------------------------------
+    -- elapsed: S_LONG_HELD'deyken long baslangicina kadar gecen sure
+    elapsed_calc <= now_ms - long_started_at when state = S_LONG_HELD
+                    else (others => '0');
+
+    -- delta: |start_ms - end_ms| (mutlak deger)
+    delta <= repeat_start_ms - repeat_end_ms when repeat_start_ms >= repeat_end_ms
+             else repeat_end_ms - repeat_start_ms;
+
+    -- product: delta * elapsed (numeric_std auto-widen 32x32 -> 64 bit)
+    product_64 <= delta * elapsed_calc;
+
+    -- divider'a alt 32 bit (taşma yok: delta*elapsed < 2^32 pratikte)
+    div_dividend <= product_64(31 downto 0);
+
+    -- divider start: sadece S_LONG_HELD'de ve repeat aktifken
+    div_start <= '1' when (state = S_LONG_HELD) and (repeat_start_ms /= 0)
+                 else '0';
+
+    --------------------------------------------------------------------------
+    -- PIPED DIVIDER (vendor-bagimsiz, 32-cycle latency, 1/cycle throughput)
+    --------------------------------------------------------------------------
+    u_div : entity work.divider_pipelined
+        generic map ( G_WIDTH => 32 )
+        port map (
+            clk       => clk,
+            rst_n     => rst_n,
+            start     => div_start,
+            dividend  => div_dividend,
+            divisor   => repeat_ramp_ms,
+            valid     => div_valid,
+            quotient  => div_quotient,
+            remainder => open
+        );
 
     u_sync : entity work.synchronizer
         generic map ( G_STAGES => 2, G_RST_VAL => '0' )
@@ -219,8 +237,6 @@ begin
     --   buttonGestureRequireRepress buton durumu ne olursa olsun gecerli).
     ----------------------------------------------------------------------------
     p_state : process(clk, rst_n)
-        -- S_LONG_HELD icin elapsed hesabi (calc_period function'ina verilir)
-        variable v_elapsed : unsigned(31 downto 0);
     begin
         if rst_n = '0' then
             state           <= S_IDLE;
@@ -228,6 +244,7 @@ begin
             window_start    <= (others => '0');
             long_started_at <= (others => '0');
             last_repeat     <= (others => '0');
+            period_reg      <= (others => '0');
         elsif rising_edge(clk) then
             if require_repress = '1' then
                 -- C: buttonGestureRequireRepress -> click_count=0, window kapali
@@ -264,6 +281,9 @@ begin
                             click_count_reg <= (others => '0');  -- C: click_count=0
                             long_started_at <= now_ms;            -- C: long_started_at=now
                             last_repeat     <= now_ms;            -- C: last_repeat=now
+                            -- period_reg initial degeri: elapsed=0 iken period=start_ms
+                            -- (divider 32 cycle sonra gercek degeri uretecek)
+                            period_reg      <= repeat_start_ms;
                         end if;
 
                     ----------------------------------------------------------------
@@ -300,29 +320,37 @@ begin
                     --   aksi               -> repeat ramp calistir, period dolunca
                     --                        last_repeat guncelle + evt_long_repeat (Adim 4)
                     --
-                    --   PERIOD HESABI (C satir 100-118):
-                    --     ramp_ms=0 VEYA elapsed >= ramp_ms  -> period = end_ms (en hizli)
-                    --     start >= end (hizlanma)            -> period = start - delta*elapsed/ramp
-                    --     start <  end (yavaslama, nadir)    -> period = start + delta*elapsed/ramp
+                    --   PERIOD HESABI: pipelined divider (u_div) 32 cycle once
+                    --   baslattigimiz (delta*elapsed) / ramp_ms bolumunu tamamlayip
+                    --   period_reg'i guncelliyor. p_state burada period_reg'i
+                    --   COMPARISON icin okur - calc_period function'i YOK artik.
                     --
-                    --   delta*elapsed 64-bit carpim (numeric_std unsigned otomatik
-                    --   genisleme YAPMAZ); biz resize ile 64-bit'e cikariz, bolumden
-                    --   sonra 32-bit'e kesilir. FPGA'de gercek bolme donanimi sentezler.
+                    --   Divider start yukarida (div_start) sadece bu state'te '1'.
+                    --   32 cycle latency: S_LONG_HELD'ye girdikten 32 cycle sonra
+                    --   gercek period degeri gelir. O zamana kadar period_reg =
+                    --   repeat_start_ms (initial, elapsed=0 icin dogru).
                     ----------------------------------------------------------------
                     when S_LONG_HELD =>
+                        -- PERIOD GUNCELLEME: pipelined divider 32 cycle once
+                        -- baslattigimiz bolumun sonucu (div_valid) burada cikar.
+                        -- once guncelle, sonra karsilastir -> yeni period bir
+                        -- sonraki tick'ten itibaren gecerli. (period_reg artik
+                        -- TEK process'ten - p_period_reg'a driver cakismasi yok.)
+                        if div_valid = '1' then
+                            if repeat_start_ms >= repeat_end_ms then
+                                period_reg <= repeat_start_ms - div_quotient;
+                            else
+                                period_reg <= repeat_start_ms + div_quotient;
+                            end if;
+                        end if;
+
                         if stable = '0' then
                             -- C satir 130-134: buton birakildi -> LONG_RELEASED olayi
                             state <= S_IDLE;
 
                         elsif repeat_start_ms /= 0 then
-                            -- C satir 98-125: repeat ramp aktif
-                            v_elapsed := now_ms - long_started_at;
-
                             -- C satir 120-124: period doldu mu?
-                            -- calc_period function'i ile periyodu hesapla
-                            if (now_ms - last_repeat) >=
-                               calc_period(v_elapsed, repeat_start_ms,
-                                           repeat_end_ms) then
+                            if (now_ms - last_repeat) >= period_reg then
                                 last_repeat <= now_ms;
                                 -- evt_long_repeat p_outputs'ta ayni tick'te uretilir
                             end if;
@@ -359,7 +387,6 @@ begin
     --     Tick N+1: state = S_LONG_HELD, evt_long default '0'
     ----------------------------------------------------------------------------
     p_outputs : process(clk, rst_n)
-        variable v_elapsed_o : unsigned(31 downto 0);
     begin
         if rst_n = '0' then
             evt_single        <= '0';
@@ -406,18 +433,15 @@ begin
 
                 ----------------------------------------------------------------
                 -- S_LONG_HELD: buton basili iken LONG_REPEAT, birakilinca
-                --              LONG_RELEASED. Period hesabi p_state ile AYNI
-                --              (calc_period function -> tek donanim blok)
+                --              LONG_RELEASED. period_reg pipelined divider
+                --              tarafindan guncellenir (p_state ile ayni signal).
                 ----------------------------------------------------------------
                 when S_LONG_HELD =>
                     if stable = '0' then
                         -- C satir 130-134: buton birakildi
                         evt_long_released <= '1';
                     elsif repeat_start_ms /= 0 then
-                        v_elapsed_o := now_ms - long_started_at;
-                        if (now_ms - last_repeat) >=
-                           calc_period(v_elapsed_o, repeat_start_ms,
-                                       repeat_end_ms) then
+                        if (now_ms - last_repeat) >= period_reg then
                             evt_long_repeat <= '1';
                         end if;
                     end if;
