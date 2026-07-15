@@ -2,16 +2,26 @@
 --  tb_fifo_sync.vhd  -- Sync FIFO testbench
 --
 --  SENARYOLAR:
---    1) Yaz + hemen oku (back-to-back) - veri sirali geliyor mu?
---    2) FIFO'yu doldur (16 eleman) - full flag dogru mu?
---    3) FIFO'yu bosalt - empty flag dogru mu?
---    4) Ayni anda yaz + oku (FIFO throughput testi)
+--    1) 3 eleman yaz + oku (sira kontrolu - FIFO kurali: ilk giren ilk cikar)
+--    2) FIFO'yu doldur (16 eleman) - full flag + overflow korumasi
+--    3) FIFO'yu bosalt (16 eleman) - empty flag + sira
 --
---  BEKLENEN SONUC:
---    - Veriler yazildigi SIRAYLA okunur (FIFO = kuyruk)
---    - 16 yazinca full=1 olur, 17. yazma girmez (overflow korumasi)
---    - Hepsini okuyunca empty=1 olur
---    - Wr_ptr ve rd_ptr N+1 bit hareketini gozlemleyebiliriz
+--  FWFT ZAMANLAMASI (onelesen VHDL dersi):
+--    rd_data, rd_ptr'den KOMBINASYONEL gelir (FWFT = first-word-fall-through).
+--    Yani rd_data = ram[rd_ptr] her an gecerli. AMA rd_ptr bir clock edge'inde
+--    guncellenir ve bu guncelleme bir DELTA CYCLE sonra etkili olur.
+--    Bu yuzden "wait until rising_edge(clk)" sonrasi rd_ptr henuz yenilenmemis
+--    olabilir -> assert yanlis deger gorur.
+--
+--    COZUM: edge'ten sonra "wait for 1 ps" bekle - sinyallerin yerlesmesi icin.
+--    Bu, VHDL testbench'lerinde standart bir tekniktir. Gercek donanimda bu
+--    delta cycle yoktur (gercek kapilar fiziksel gecikmelerle calisir), ama
+--    simulatorden delta cycle kusruguayi budur.
+--
+--    Dogru okuma sirasi (FWFT):
+--      - rd_data her an rd_ptr'nin gosterdigi elemani gosterir
+--      - rd_en=1 iken her clock'ta rd_ptr ilerler
+--      - "su anki rd_data"yi kontrol et, sonra clock pulse ver, ilerle
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -35,8 +45,8 @@ architecture sim of tb_fifo_sync is
     signal rd_data : std_logic_vector(15 downto 0);
     signal empty   : std_logic;
 
-    -- Dogrulama sayaci
     signal check_cnt : integer := 0;
+    signal fail_cnt  : integer := 0;
 
 begin
 
@@ -62,6 +72,7 @@ begin
     -- STIMULUS
     ----------------------------------------------------------------------------
     p_stim : process
+        variable v_expected : std_logic_vector(15 downto 0);
     begin
         -----------------------------------------------------------------------
         -- RESET
@@ -70,49 +81,52 @@ begin
         wait for 30 ns;
         rst_n <= '1';
         wait until rising_edge(clk);
+        wait for 1 ps;
+
+        assert empty = '1' report "RESET sonrasi empty=1 olmali" severity error;
 
         -----------------------------------------------------------------------
         -- TEST 1: 3 eleman yaz, sonra oku (sira kontrolu)
         -----------------------------------------------------------------------
         report "TEST 1: 3 eleman yaz + oku (sira kontrolu)" severity note;
 
-        -- 0xAA00 yaz
+        -- 0xAA00, 0xAA01, 0xAA02 yaz
         wr_data <= x"AA00";  wr_en <= '1';
         wait until rising_edge(clk);
-        -- 0xAA01 yaz
         wr_data <= x"AA01";
         wait until rising_edge(clk);
-        -- 0xAA02 yaz
         wr_data <= x"AA02";
         wait until rising_edge(clk);
         wr_en <= '0';
         wait until rising_edge(clk);
+        wait for 1 ps;
 
-        -- Simdi oku: sirayla AA00, AA01, AA02 gelmeli
-        -- FWFT: rd_data, rd_ptr'nin gosterdigi elemani KOMBINASYONEL olarak
-        -- verir. rd_en=1 yapinca pointer bir sonraki clock'ta ilerler.
+        -- 3 eleman var, empty=0 olmali
+        assert empty = '0' report "TEST1: 3 yazildi ama empty=0 olmadir" severity error;
+
+        -- FWFT okuma: rd_data su an rd_ptr=0'dan AA00'u gosteriyor.
+        -- Her clock'ta rd_ptr ilerler, rd_data bir sonraki elemana gecer.
         rd_en <= '1';
-        -- rd_data su an rd_ptr=0 -> AA00 gosteriyor (FWFT)
-        assert rd_data = x"AA00" report "TEST1 FAIL: 1. okuma AA00 degil: 0x" &
-               to_hstring(rd_data) severity error;
-        check_cnt <= check_cnt + 1;
-        wait until rising_edge(clk);   -- bu kenarda rd_ptr 0->1
-        assert rd_data = x"AA01" report "TEST1 FAIL: 2. okuma AA01 degil: 0x" &
-               to_hstring(rd_data) severity error;
-        check_cnt <= check_cnt + 1;
-        wait until rising_edge(clk);   -- rd_ptr 1->2
+        for i in 0 to 2 loop
+            v_expected := std_logic_vector(to_unsigned(16#AA00# + i, 16));
+            assert rd_data = v_expected
+                report "TEST1 FAIL: okuma " & integer'image(i) &
+                       " beklenen 0x" & to_hstring(v_expected) &
+                       " gercek 0x" & to_hstring(rd_data)
+                severity error;
+            wait until rising_edge(clk); wait for 1 ps;
+        end loop;
+        check_cnt <= check_cnt + 3;
         rd_en <= '0';
-        assert rd_data = x"AA02" report "TEST1 FAIL: 3. okuma AA02 degil: 0x" &
-               to_hstring(rd_data) severity error;
-        check_cnt <= check_cnt + 1;
-        wait until rising_edge(clk);
+        wait until rising_edge(clk); wait for 1 ps;
+
+        assert empty = '1' report "TEST1: 3 okuma sonrasi empty=1 olmali" severity error;
 
         -----------------------------------------------------------------------
         -- TEST 2: FIFO'yu doldur (16 eleman = DEPTH)
         -----------------------------------------------------------------------
         report "TEST 2: 16 eleman yaz (doldur)" severity note;
 
-        -- 16 eleman yaz (0xBB00 .. 0xBB0F)
         for i in 0 to 15 loop
             wr_data <= std_logic_vector(to_unsigned(16#BB00# + i, 16));
             wr_en   <= '1';
@@ -120,38 +134,45 @@ begin
         end loop;
         wr_en <= '0';
         wait until rising_edge(clk);
+        wait for 1 ps;
 
         -- full flag artik 1 olmali
-        assert full = '1' report "TEST2 FAIL: 16 yazmama ragmen full=1 olmadi" severity error;
+        assert full = '1'
+            report "TEST2 FAIL: 16 yazmaya ragmen full=1 olmadir" severity error;
         report "TEST2: full flag = 1 (DOGRU)" severity note;
 
-        -- 17. yazma denenir - FIFO dolu, veri girmemeli
+        -- 17. yazma denenir - FIFO dolu, veri girmemeli (overflow korumasi)
         wr_data <= x"FFFF";  wr_en <= '1';
         wait until rising_edge(clk);
         wr_en <= '0';
-        assert full = '1' report "TEST2: full hala 1 (overflow korumasi calisiyor)" severity note;
+        wait for 1 ps;
+        assert full = '1' report "TEST2: overflow korumasi calisiyor (full hala 1)" severity note;
 
         -----------------------------------------------------------------------
-        -- TEST 3: FIFO'yu bosalt (16 eleman oku)
+        -- TEST 3: FIFO'yu bosalt (16 eleman oku, sira kontrolu)
         -----------------------------------------------------------------------
-        report "TEST 3: 16 eleman oku (doldur)" severity note;
+        report "TEST 3: 16 eleman oku (sira + empty)" severity note;
 
         rd_en <= '1';
+        -- FWFT: rd_data su an rd_ptr=0'dan BB00'u gosteriyor.
+        -- Her clock'ta rd_ptr ilerler, rd_data bir sonraki elemana gecer.
+        -- Once su anki (BB00) assert et, sonra clock ver, sonrakine gec.
         for i in 0 to 15 loop
-            -- FWFT: rd_data rd_ptr'nin gosterdigi (su anki) elemani verir.
-            -- rd_en=1 iken her clock'ta rd_ptr ilerler, rd_data bir sonraki elemana gecer.
-            assert rd_data = std_logic_vector(to_unsigned(16#BB00# + i, 16))
-                report "TEST3 FAIL: okuma " & integer'image(i) & " beklenen 0x" &
-                to_hstring(std_logic_vector(to_unsigned(16#BB00# + i, 16))) &
-                " gercek 0x" & to_hstring(rd_data) severity error;
-            check_cnt <= check_cnt + 1;
-            wait until rising_edge(clk);   -- rd_ptr ilerler
+            v_expected := std_logic_vector(to_unsigned(16#BB00# + i, 16));
+            assert rd_data = v_expected
+                report "TEST3 FAIL: okuma " & integer'image(i) &
+                       " beklenen 0x" & to_hstring(v_expected) &
+                       " gercek 0x" & to_hstring(rd_data)
+                severity error;
+            wait until rising_edge(clk); wait for 1 ps;
         end loop;
+        check_cnt <= check_cnt + 16;
         rd_en <= '0';
         wait until rising_edge(clk);
+        wait for 1 ps;
 
-        -- empty flag artik 1 olmali
-        assert empty = '1' report "TEST3 FAIL: tum veri okundu ama empty=1 olmadi" severity error;
+        assert empty = '1'
+            report "TEST3 FAIL: tum veri okundu ama empty=1 olmadir" severity error;
         report "TEST3: empty flag = 1 (DOGRU)" severity note;
 
         -----------------------------------------------------------------------
@@ -159,7 +180,7 @@ begin
         -----------------------------------------------------------------------
         report "============================================" severity note;
         report "  TEST SONUCU: " & integer'image(check_cnt) &
-                " basarili okuma dogrulandi" severity note;
+                " okuma dogrulandi" severity note;
         report "============================================" severity note;
         wait;
     end process p_stim;
