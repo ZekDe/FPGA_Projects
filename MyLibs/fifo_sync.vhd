@@ -20,7 +20,7 @@
 --
 --  "FULL MU, EMPTY MI?" SORUNU - N+1 BIT HILESI:
 --    Eger wr_ptr == rd_ptr ise iki anlama gelebilir:
---      a) HIC veri yok (empty)
+--      a) Hic veri yok (empty)
 --      b) Tamamen dolu (writer, reader'i bir tur gecip yakaladi - full)
 --    Bu belirsizligi cozmek icin pointer'lara 1 EKSTRA BIT ekleriz.
 --    DEPTH=8 (3 bit) icin pointer 4 bit olur. Alt 3 bit = index, MSB = tur.
@@ -32,7 +32,7 @@
 --  INFERRED BRAM (RAM'i kendin tanimla, Quartus blok RAM yapsin):
 --    Aşağıda "type t_ram is array..." ile bir dizi tanimliyoruz. Bu dizi
 --    senzlendiğinde Quartus bunu otomatik olarak Cyclone V'in M10K bloklarina
---    (yerlesik RAM) donusturur. Bu sunedenir:
+--    (yerlesik RAM) donusturur:
 --      - ayni clock'ta write ve read adresleri ayri olabilir (simple-dual)
 --      - write sirasinda eski deger (read-first) okunabilir
 --    Bu yonteme "RAM inference" denir. Black-box IP kullanmadan, tam VHDL.
