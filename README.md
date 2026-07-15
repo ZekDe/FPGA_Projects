@@ -1,4 +1,4 @@
-# MyLibs — Reusable FPGA IP Kütüphanesi
+# FPGA Çalışması
 
 Bu klasör, FPGA donanım modüllerinin **yeniden kullanılabilir (reusable)** bloklarını
 içerir. Tüm bloklar **vendor-bağımsız** (vendor-independent) VHDL ile yazılmıştır:
