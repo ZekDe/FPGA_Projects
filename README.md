@@ -546,19 +546,14 @@ Faz 7 (HPS+Linux) ve Faz 8 (IMU) var. Yol haritası yukarıdadır.
 
 ## Metodoloji
 
-- **Vendor-bağımsız:** Sadece `std_logic_1164` + `numeric_std` + `math_real`. Hiçbir
-  vendor IP'si (ALTPLL, LPM_DIVIDE, Nios II vb.) kullanılmaz.
 - **C referansı:** Her FSM, C'deki bir kütüphanenin birebir port'idur. Header
   yorumları C fonksiyon imzalarını ve satır numaralarını belirtir.
 - **Testbench + simülasyon doğrulaması:** Her modül için testbench yazılır, simülasyonda
-  çalıştırılır, dalga formu incelenir. Testbench yazmak, "çalışıyor" demekten farklıdır.
-- **Kart doğrulaması:** Mümkün olduğunda FPGA'a yüklenip gözlemlenir (Faz 1 ve 3.1'de yapıldı).
-- **Kendin yaz:** Her primitif sıfırdan yazılır, black-box IP alınmaz. "Neden böyle?"
+  çalıştırılır, dalga formu incelenir. Çok zor ise ihmal edilir.
+- **Kart doğrulaması:** FPGA'a yüklenip gözlemlenir.
+- **Kendin yaz:** Her primitif sıfırdan yazılır, black-box IP zorunlu olmadıkça alınmaz. "Neden böyle?"
   sorusu her zaman sorulur, cevap header yorumunda yazılı olur.
 
-## İletişim
 
-GitHub: [repo linki buraya]
-
-Bu kütüphane, "C'den FPGA'ye yolculuk" serisinin çıktısıdır. Her faz bir sonrakine
-temel olur. Hedef: IMU → SPI → FIFO → AXI → HPS (ARM Cortex-A9) → Linux pipeline'ı.
+"C'den FPGA'ye yolculuk" serisinin çıktısıdır. Her faz bir sonrakine
+temel olur. Hedef: IMU → SPI → FIFO → AXI Full → HPS (ARM Cortex-A9) → Linux pipeline'ı.
