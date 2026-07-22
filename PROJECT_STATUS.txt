@@ -16,50 +16,6 @@ DO-254 audit'e uygun VHDL hedeflemek. Yapay zekayı bir öğrenme hocası olarak
 kullanmak; ürettiği her satırı incelemek, anlamak, gerektiğinde düzeltmek.
 
 
-NE YAPTIK (tamamlanan fazlar)
------------------------------
-1. FSM + temel CDC primitifleri
-   - button_gesture: tek/çoklu tıklama, uzun basış, ivmeli repeat algılayıcı
-     (C'den VHDL'e birebir port). debounce, edge detection, TON timer, 2-FF
-     synchronizer.
-
-2. CDC derin
-   - Multi-bit CDC problemini simülasyonda kanıtladık (binary 15 hata, gray 0).
-   - gray_pkg (binary↔gray dönüşüm), async req/ack handshake, toggle-sync pulse
-     CDC modülleri yazıldı.
-
-3. FIFO (sync + async)
-   - Sync FIFO: dairesel tampon, N+1 bit pointer hilesi, inferred BRAM (M10K).
-   - Async FIFO: gray pointer + 2-FF (Cliff Cummings mimarisi). 3 clock domain.
-
-4. BRAM (teori)
-   - Inferred vs instantiated, single/dual-port modları, write/read-first.
-
-5. AXI-Lite Slave
-   - HPS ↔ FPGA köprüsü: 5 kanal (AW/W/B/AR/R), VALID/READY handshake.
-   - Register file: 6 config (rw) + 2 status (ro) register.
-   - button_gesture'a bağlandı; sim'de HPS config yazdı, buton tepki verdi.
-
-Ek: PLL (50→100+33 MHz), pipelined divider (32-stage, timing closure),
-timing closure pratikleri (sta.rpt okuma, SDC, set_clock_groups).
-
-
-ŞİMDİ NEREDEN BİZ
------------------
-- FPGA fabric tarafı hazır: button_gesture + async FIFO + AXI-Lite Slave
-  birbirine entegre edildi ve simülasyonda doğrulandı.
-- Platform Designer'da `soc_system.qsys` oluşturuldu ve HPS IP eklendi.
-  - HPS DDR3: DE0-Nano-SoC'nin 1 GB / 32-bit / 400 MHz DDR3'ü için
-    ayarlandı; HDL üretimi başarıyla tamamlandı (`qsys-generate succeeded`).
-  - Lightweight HPS-to-FPGA AXI bridge: 32-bit etkin.
-  - Köprü clock'u: `clk_0` / `CLOCK_50` (50 MHz).
-  - HPS çevre birimleri: microSD için SDIO Set 0 / 4-bit, seri konsol için
-    UART0 Set 0 / No Flow Control etkin.
-  - HPS AXI master ve HPS-to-FPGA reset, `h2f_lw_axi` ve `h2f_reset`
-    adlarıyla Platform Designer dışına export edildi.
-- HPS ile FPGA mantığı henüz VHDL top-level'da kablolanmadı; kartta HPS/Linux
-  erişimi henüz test edilmedi.
-
 SIRADAKİ ADIM
 -------------
 Platform Designer çıktısını mevcut tasarıma bağlamak:

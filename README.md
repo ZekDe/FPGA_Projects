@@ -10,92 +10,7 @@ audit için tam transparan VHDL'dir.
 Bu kütüphane, adım adım bir öğrenme yolculuğunun çıktısıdır. Her faz bir önceki
 fazın üstüne inşa edilir:
 
-```
-[TAMAMLANDI] Faz 1: FSM
-   ├─ button_gesture.c -> VHDL FSM port (5 durum, case-when)
-   ├─ 1-bit CDC (synchronizer), debounce, TON, edge detector
-   ├─ C'den VHDL'e birebir portlama metodolojisi
-   ├─ One-hot event pulse cikislari, default+override deseni
-   └─ Kartta LED gozlemi (DE0-Nano-SoC)
 
-[TAMAMLANDI] Faz 2: CDC derin
-   ├─ Multi-bit CDC problemi (2-FF yetmez) - simülasyonda ispatlandi
-   ├─ Gray code: tanım, binary<->gray dönüşüm, neden çalışır
-   ├─ Async handshake (req/ack) cok-bitli veri için
-   ├─ Toggle-sync pulse CDC (cdc_pulse_sync) - 06_fifo_async'da kullanildi
-   └─ MTBF hesabı (atlandi - pratik kural: 2 FF yeter, 3 FF savunma)
-
-[TAMAMLANDI] Faz 3.1: Sync FIFO
-   ├─ Dairesel tampon (circular buffer) + pointer matematigi
-   ├─ "Full mu, empty mi?" - N+1 bit hilesi
-   ├─ Inferred BRAM (Quartus M10K'a sentezlendi)
-   └─ Kartta uygulama (05_fifo_sync)
-
-[TAMAMLANDI] Faz 3.2: Async FIFO
-   ├─ Gray pointer + 2-FF = Faz 2'nin uygulaması
-   ├─ Cummings async FIFO mimarisi
-   ├─ Simülasyonda doğrulandı (19/19 okuma, 2 domain)
-   └─ Kartta uygulama (06_fifo_async) - 3 clock domain
-
-[TAMAMLANDI] Faz 4: BRAM (teori)
-   ├─ Inferred vs instantiated (sen inference kullandın - FIFO'larda)
-   ├─ Single-port / simple-dual / true-dual modları
-   └─ Write-first / read-first / no-change (FIFO = read-first)
-
-[TAMAMLANDI] Faz PLL: Clock generation (06_fifo_async)
-   ├─ ALTPLL IP: 50 MHz -> 100 MHz (wr_clk) + 33 MHz (rd_clk)
-   ├─ m/n/c ratio, locked sinyali, VCO aralıkları
-   ├─ fifo_rst_n = rst_n AND locked (Cummings onerisi)
-   └─ SDC: derive_pll_clocks + create_generated_clock + set_clock_groups
-
-[TAMAMLANDI] Faz 6: Timing closure (06_fifo_async raporu)
-   ├─ Setup/hold slack, TNS, Fmax kavramları
-   ├─ Timing raporu okuma (sta.rpt)
-   ├─ CDC: set_clock_groups -asynchronous
-   └─ Senin projende: TNS=0, worst setup slack +4.78 ns, closure SAĞLANDI
-
-[SIRADA] Faz 5: AXI-Lite
-   ├─ VALID/READY handshake (decoupled)
-   ├─ 5 kanal: AW, W, B, AR, R
-   ├─ Sinyaller: VALID/READY/ADDR/DATA/RESP/PROT/STRB
-   ├─ Response kodları: OKAY, EXOKAY, SLVERR, DECERR
-   ├─ Register file + adres decoding
-   └─ Out-of-order Lite'ta yok
-
-[SIRADA] Faz 7: HPS + Linux (Platform Designer, device tree, /dev/mem)
-[SIRADA] Faz 8: IMU (SPI master + async FIFO + AXI-Stream)
-   └─ Hedef: IMU -> SPI -> FIFO -> AXI -> HPS (ARM Cortex-A9) -> Linux
-```
-
-## Uygulama Projeleri
-
-MyLibs modülleri, `VHDL_Projects/` altındaki uygulama projelerinde kullanilir.
-Her proje, `system_top.vhd` dosyasinin basindaki "DOSYA LISTESI" bolumunden
-hangi modülleri kullandigini belirtir.
-
-| Proje | Kullandigi MyLibs modülleri | Faz |
-|-------|------------------------------|-----|
-| `04_button_gesture/` | button_gesture, synchronizer, ton, edge_detector, divider_pipelined, time_base_ms, led_pulse | 1+6 |
-| `05_fifo_sync/` | button_gesture (x2), fifo_sync, + 04'teki tüm modüller | 1+6+3.1 |
-| `06_fifo_async/` | fifo_async, cdc_pulse_sync (x2), gray_pkg, + öncekilerin tümü, ALTPLL IP (PLL) | 1+2+3+PLL |
-
-## İçindekiler — Fazlara Göre
-
-| Dosya | Ne işe yarar | Faz | Tip |
-|-------|--------------|-----|-----|
-| `synchronizer.vhd` | 2-FF CDC: async tek-bit sinyali domain'ler arası güvenle taşır | 1 | CDC |
-| `time_base_ms.vhd` | Clock → milisaniye zaman tabanı (donanım SysTick) | 1 | Zaman |
-| `ton.vhd` | IEC 61131-3 On-Delay Timer (TON) | 1 | Zaman |
-| `edge_detector.vhd` | Yükselen kenar algılayıcı (1-clock pulse) | 1 | Primitif |
-| `button_gesture.vhd` | Buton gesture FSM: single/multi/long/repeat/release | 1 | FSM |
-| `divider_pipelined.vhd` | 32-bit unsigned divider, 32-stage pipeline | 6 ön | Aritmetik |
-| `led_pulse.vhd` | 1-clock pulse → N ms LED seviyesi (re-triggerable) | 1 | Çıkış |
-| `gray_pkg.vhd` | Binary↔Gray code dönüşüm fonksiyonları (package) | 2 | CDC |
-| `cdc_handshake_tx.vhd` | Async handshake verici: çok-bitli veriyi karşı domain'e gönder | 2 | CDC |
-| `cdc_handshake_rx.vhd` | Async handshake alıcı: çok-bitli veriyi karşı domain'den al | 2 | CDC |
-| `cdc_pulse_sync.vhd` | Toggle + 2-FF + edge detect: tek-bit pulse'u karşı domain'e güvenli taşı | 2 | CDC |
-| `fifo_sync.vhd` | Senkron FIFO (tek clock domain), N+1 bit full/empty, inferred BRAM | 3 | FIFO |
-| `fifo_async.vhd` | Asenkron FIFO (iki clock domain), gray pointer + 2-FF, inferred BRAM | 3 | FIFO |
 
 ## Bağımlılık Ağacı (Dependency Tree)
 
@@ -141,57 +56,6 @@ Kural: **system_top başındaki listeyi oku → QSF'ye ekle → derle.**
 Eğer hangi dosyaya ihtiyacın olduğunu bilmiyorsan, **bağımlılık ağacını** oku: bir
 modülü kullanacaksan, onun altındaki tüm modülleri de eklemelisin.
 
-## Yollar Hakkında
-
-Bu kütüphaneyi kullanmak isteyen bir proje, kendi qsf'inde şöyle yollar kullanır:
-
-```tcl
-# Proje klasoru: 04_xxx/
-# MyLibs klasoru: ../MyLibs/   (bir üst dizin)
-set_global_assignment -name VHDL_FILE ../MyLibs/synchronizer.vhd
-set_global_assignment -name VHDL_FILE ../MyLibs/button_gesture.vhd
-# ... vb
-```
-
-Eğer MyLibs'u başka bir yere koyarsan, sadece yolları güncellersin.
-
-## Sentez Kuralları
-
-- **2008 VHDL standardı** kullanılır (`vcom -2008`, Quartus'ta "VHDL 2008" seçeneği).
-- Tüm modüller **asenkron reset, aktif-düşük** (`rst_n`) kullanır.
-- Tüm zamanlama **`now_ms` (milisaniye) üzerinden** yapılır, clock tick değil.
-- Tüm modüller **vendor-bağımsız**dır — `std_logic_1164` + `numeric_std` dışında
-  hiçbir vendor IP'si kullanılmaz.
-
-## Simülasyon
-
-Her modül için bir testbench `sim/` altındadır. Çalıştırmak için:
-
-```tcl
-# Questa/ModelSim Transcript penceresinde:
-cd {C:/Users/user/Desktop/QUARTUS/VHDL_Projects/MyLibs/sim}
-do run_<test_adi>.do
-```
-
-| Testbench | Ne test eder | do dosyası |
-|-----------|--------------|------------|
-| `tb_divider_pipelined.vhd` | Pipelined divider: 5 senaryo | `tb_divider_pipelined.do` |
-| `tb_cdc_binary_vs_gray.vhd` | CDC: binary (15 hata) vs gray (0 hata) | `run_gray_demo.do` |
-| `tb_cdc_handshake.vhd` | 32-bit rastgele verinin handshake ile transferi | `run_handshake.do` |
-| `tb_fifo_sync.vhd` | Sync FIFO: yaz/oku sırası, full/empty flag'leri | `run_fifo.do` |
-| `tb_fifo_async.vhd` | Async FIFO: iki clock domain arası veri bütünlüğü (19/19 okuma) | `run_fifo_async.do` |
-| `tb_button_gesture.vhd` | Buton gesture FSM: 4 senaryo | (`04_button_gesture/sim/`) |
-
-## VHDL 2008
-
-Bu kütüphanenin tümü VHDL 2008 standardında yazılmıştır. Derleme komutları:
-
-```bash
-# Questa/ModelSim:
-vcom -2008 <dosya.vhd>
-
-# Quartus: Settings → General → VHDL Input Version → VHDL 2008
-```
 
 ## Testbench Tuzakları ve Çözümleri
 
@@ -536,29 +400,6 @@ adresleri decode edip ilgili register'a yönlendirir.
 
 **Out-of-order Lite'ta yok** — her transaction sırayla bitmeli.
 
----
-
-## Lisans ve Durum
-
-Kişisel öğrenme kütüphanesi. Sentez için tam transparan VHDL — DO-254 audit uygun.
-Faz 1, 2, 3, 4, PLL ve 6 (timing closure) tamamlandı. Sırada Faz 5 (AXI-Lite),
-Faz 7 (HPS+Linux) ve Faz 8 (IMU) var. Yol haritası yukarıdadır.
-
-## Metodoloji
-
-- **C referansı:** Her FSM, C'deki bir kütüphanenin birebir port'idur. Header
-  yorumları C fonksiyon imzalarını ve satır numaralarını belirtir.
-- **Testbench + simülasyon doğrulaması:** Her modül için testbench yazılır, simülasyonda
-  çalıştırılır, dalga formu incelenir. Çok zor ise ihmal edilir.
-- **Kart doğrulaması:** FPGA'a yüklenip gözlemlenir.
-- **Kendin yaz:** Her primitif sıfırdan yazılır, black-box IP zorunlu olmadıkça alınmaz. "Neden böyle?"
-  sorusu her zaman sorulur, cevap header yorumunda yazılı olur.
-
-
-"C'den FPGA'ye yolculuk" serisinin çıktısıdır. Her faz bir sonrakine
-temel olur. Hedef: IMU → SPI → FIFO → AXI Full → HPS (ARM Cortex-A9) → Linux pipeline'ı.
-
----
 
 ## DE0-Nano-SoC HPS DDR3 Ayarları (Platform Designer)
 
