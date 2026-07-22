@@ -557,3 +557,242 @@ Faz 7 (HPS+Linux) ve Faz 8 (IMU) var. Yol haritası yukarıdadır.
 
 "C'den FPGA'ye yolculuk" serisinin çıktısıdır. Her faz bir sonrakine
 temel olur. Hedef: IMU → SPI → FIFO → AXI Full → HPS (ARM Cortex-A9) → Linux pipeline'ı.
+
+---
+
+## DE0-Nano-SoC HPS DDR3 Ayarları (Platform Designer)
+
+Bu bölüm, `07_axi_button_gesture/soc_system.qsys` içindeki **Arria V/Cyclone V
+Hard Processor System** IP'sinin HPS DDR3 ayarlarının gerekçesidir. Amaç
+değerleri ezberlemek değil; her birinin kaynağını, hesaplandığı yeri ve
+board-level varsayım olup olmadığını ayırmaktır.
+
+### Kaynak ve güven sınırı
+
+
+| Kaynak sınıfı | Bu projede neyi belirler? | Doğrudan mı, hesap mı? |
+|---|---|---|
+| Terasic **User Manual** | HPS DDR3'ün `1 GB`, `2 x 256M x 16`, `32-bit` ve `400 MHz target` oluşu | Doğrudan board bilgisi |
+| Terasic **şeması / PCB tasarımı** | Hangi HPS-DDR pininin hangi çip pinine gittiği, iki x16 çipin aynı command/address hattını paylaşması | Doğrudan topoloji bilgisi; iz gecikmeleri şemadan hesaplanmaz |
+| DDR3 çip **datasheet'i** | Bank/row/column geometrisi, voltage, DDR3 mode-register seçenekleri ve minimum timing sınırları | Doğrudan çip bilgisi |
+| DE0-Nano-SoC **referans Platform Designer yapılandırması** | Bu kart için seçilmiş CAS/ODT/drive-strength, HPS PLL referansı, tRFC ve board-skew değerleri | Hazır doğrulanmış board profili; genel kural değildir |
+| Buradaki **hesaplar** | `16+16=32 bit`, kapasite ve `400 MHz x 2 = 800 MT/s` dönüşümü | Yukarıdaki gerçeklerden türetilir |
+
+Önemli sınır: User Manual kartın bellek kapasitesini, genişliğini ve hedef
+frekansını verir; fakat **tek başına** bütün mode-register, ODT ve PCB-skew
+sayısını vermez. Bu ikinci grup için çip datasheet'i ve DE0-Nano-SoC'ye ait
+referans Platform Designer profili gerekir. `0.6 ns` gibi skew değerlerini
+kartın şemasına bakıp biz hesaplamadık; bunlar reference-board değerleridir.
+Kart revizyonu veya bellek çip işareti farklıysa, önce şema ve çip datasheet'i
+tekrar doğrulanmalıdır.
+
+- **Kart gerçeği:** DE0-Nano-SoC HPS belleği, tek address/command bus üzerinde
+  çalışan **iki adet `256M x 16` DDR3** çiptir. Toplam kapasite 1 GB, HPS veri
+  yolu 32 bittir ve hedef bellek clock'u 400 MHz'dir.
+- **Çip verisi:** `256M x 16` DDR3 organizasyonu, 8 internal bank; 15 row
+  address bit; 10 column address bit; 3 bank-address biti gerektirir.
+- **Hesap:** DDR olduğu için veri hem rising hem falling edge'de aktarılır:
+  `400 MHz clock x 2 = 800 MT/s`. Bu nedenle IP'deki speed grade `800 MHz`
+  (DDR3-800 etkin veri hızı sınıfı) iken gerçek memory clock `400 MHz`dir.
+- **Board-level değerler:** ODT, output drive strength ve PCB skew değerleri
+  salt VHDL'den hesaplanmaz. Bunlar kartın iz topolojisi/sinyal bütünlüğü için
+  DE0-Nano-SoC referans yapılandırmasından alınır.
+
+Referanslar: [Terasic DE0-Nano-SoC User Manual](https://www.terasic.com.tw/attachment/archive/954/DE0-Nano-SoC_User_manual_rev.D0.pdf),
+[DE0-Nano-SoC Design Guide](https://www.scribd.com/document/417343940/SoC-FPGA-Design-Guide-DE0-Nano-SoC-Edition).
+
+### Fiziksel bellek yapısı
+
+```
+HPS 32-bit data bus
+├─ DQ[15:0]  -> DDR3 chip 0 (256M x 16 = 512 MB)
+└─ DQ[31:16] -> DDR3 chip 1 (256M x 16 = 512 MB)
+
+Toplam: 1 GB, tek 32-bit rank
+```
+
+İki çip paralel çalışır: aynı address/command hattını ve aynı `CS_n` (chip
+select) sinyalini alırlar; biri kelimenin alt, diğeri üst 16 bitini sağlar.
+Bu yüzden:
+
+| Platform Designer alanı | Değer | Gerekçe |
+|---|---:|---|
+| Total interface width | 32 | `16 + 16` bit, iki çip paralel |
+| Chip select/depth expansion | 1 | Tek rank; iki çip genişlik için birlikte seçilir |
+| Number of clocks | 1 | Tek diferansiyel CK/CK# clock çifti |
+| DQS groups | 4 (otomatik) | Her DQS grubu 8 bit: `32 / 8 = 4` |
+| Enable DM pins | Açık | 32-bit yolun dört byte-mask hattı vardır |
+| DQS# Enable | Açık | DDR3 diferansiyel DQS/DQS# strobe kullanır |
+
+**Depth expansion** ek rank eklemek demektir; genişliği değil kapasiteyi
+büyütür. Örneğin iki rank olsaydı `CS0` bir çift x16 çipi, `CS1` ikinci çift
+x16 çipi seçerdi. Bu kartta sadece bir rank bulunduğundan değer 1'dir.
+
+Her DDR3 çipinin kendi içinde 8 bank vardır; iki çip aynı `BA[2:0]` bank
+adresini aldığı için bunlar 16 bağımsız bank oluşturmaz. Bir komutta her iki
+çipin aynı numaralı bankı çalışır ve HPS bunu 32-bit mantıksal bank olarak
+görür.
+
+```
+Her chip: 32M x 16 x 8 bank
+          2^15 row x 2^10 column x 2^3 bank x 16 bit
+        = 2^28 adet 16-bit konum = 256M x 16
+```
+
+Bu nedenle row address width=15, column address width=10 ve bank-address
+width=3 girilir.
+
+### Girilen DDR3 parametreleri
+
+| Alan | Değer | Nereden gelir? | Nasıl seçildi? |
+|---|---:|---|---|
+| Protocol | DDR3 | User Manual | Karttaki bellek teknolojisi doğrudan belirtilir |
+| Memory clock | 400 MHz | User Manual + referans profil | Manual target speed'i verir; profil HPS IP'de uygulanacak değeri doğrular |
+| PLL reference clock | 25 MHz | Kartın HPS 25 MHz clock bağlantısı + referans profil | HPS'ye fiziksel 25 MHz kaynak bağlıdır; profil bu kaynağı DDR PLL ref olarak seçer |
+| Supply / I/O | 1.5 V DDR3 / SSTL-15 | Çip datasheet'i + QSF/board I/O standardı | Elektrik standardıdır, performans tercihi değildir |
+| Vendor | Other | Platform Designer seçimi | Birebir hazır device preset'i yerine datasheet/reference değerleri elle girilir; bu çip üreticisinin “Other” olduğu anlamına gelmez |
+| Device speed grade | 800 MHz | Çip datasheet'i + referans profil | Çipin DDR3-800 sınıfı; çalışma clock'u değildir |
+| CS/depth | 1 | User Manual + şema topolojisi | İki x16 çip genişlik için paraleldir, ikinci rank yoktur |
+| Row / column / bank | 15 / 10 / 3 | Çip datasheet'i | `32M x16 x8 bank` iç geometrisinden gelir |
+
+### Mode register / initialization seçenekleri
+
+Bu seçenekler resetten sonra HPS controller'ın DDR3 mode register'larına
+yazdığı çalışma biçimleridir.
+
+| Ayar | Değer | Nereden gelir? | Anlamı |
+|---|---|---|---|
+| Mirror addressing | 0 | Şema/topoloji | İkinci rank adres çaprazlaması yok; tek rank |
+| Burst length | Burst chop 4 or 8 | DDR3 datasheet + referans profil | Controller 4 veya 8 transferlik burst seçebilir |
+| Read burst type | Sequential | Referans profil | Burst adresi ardışık ilerler |
+| DLL precharge power down | DLL off | Referans profil | Sadece precharge power-down modundaki DLL davranışı; normal çalışmada DLL'i küresel kapatmaz |
+| CAS latency | 7 | Datasheet timing tablosu + 400 MHz çalışma noktası | READ ile ilk veri arasındaki 7 clock; 400 MHz'de 17.5 ns |
+| Output drive strength | RZQ/6 | PCB/sinyal bütünlüğü referans profili | Yaklaşık 40 ohm çıkış empedansı; PCB yansımalarını azaltır |
+| ODT Rtt nominal | RZQ/6 | PCB/sinyal bütünlüğü referans profili | Dahili sonlandırma empedansı; sinyal bütünlüğü |
+| Auto self-refresh | Manual | Referans profil | Self-refresh girişini HPS/controller yönetir |
+| Self-refresh temperature | Normal | Datasheet + referans profil | Normal sıcaklık refresh profili |
+| Write CAS latency | 7 | Datasheet timing tablosu + 400 MHz çalışma noktası | WRITE veri zamanlaması için 7 clock |
+| Dynamic ODT | Off | PCB/sinyal bütünlüğü referans profili | Yazma sırasında değişken ODT kullanılmaz |
+
+### Memory timing
+
+DDR3 erişimi bir row'u açıp (ACTIVATE), o row içinden okuyup/yazıp, gerekince
+kapatma (PRECHARGE) şeklindedir:
+
+```
+ACTIVATE --tRCD--> READ/WRITE --tRTP veya tWR--> PRECHARGE --tRP--> sonraki ACTIVATE
+       \------------------------- tRAS ---------------------------/
+```
+
+| Parametre | Değer | Nereden gelir? | Anlamı |
+|---|---:|---|---|
+| tINIT | 500 us | DDR3 datasheet | Güç/reset sonrası ilk DDR komutundan önce bekleme |
+| tMRD | 4 cycles | DDR3 datasheet | Mode register yazımından sonraki bekleme |
+| tRAS | 35.0 ns | DDR3 datasheet | Açılan row'un kapatılmadan önce açık kalma süresi |
+| tRCD | 13.75 ns | DDR3 datasheet | ACTIVATE'ten READ/WRITE'a bekleme |
+| tRP | 13.75 ns | DDR3 datasheet | PRECHARGE'tan sonraki ACTIVATE'a bekleme |
+| tREFI | 7.8 us | DDR3 datasheet | Ortalama refresh komutu aralığı |
+| tRFC | 300.0 ns | DDR3 datasheet, 4 Gbit yoğunluk | Refresh süresi; refresh sırasında bellek meşguldür |
+| tWR | 15.0 ns | DDR3 datasheet | Yazma sonrası PRECHARGE öncesi bekleme |
+| tWTR | 4 cycles | DDR3 datasheet | Yazma sonrası okumaya geçiş beklemesi |
+| tFAW | 37.5 ns | DDR3 datasheet | Dört ACTIVATE için akım sınırı penceresi |
+| tRRD | 7.5 ns | DDR3 datasheet | Farklı banklarda iki ACTIVATE arası bekleme |
+| tRTP | 7.5 ns | DDR3 datasheet | Okuma sonrası PRECHARGE öncesi bekleme |
+
+Diğer PHY timing değerleri (`tIS`, `tIH`, `tDS`, `tDH`, `tDQSQ`, `tQH`,
+`tDQSCK`, `tDQSS`, `tQSH`, `tDSH`, `tDSS`) DDR clock/data/DQS strobe
+kenarları arasındaki setup-hold sınırlarıdır. Referans yapılandırmadaki
+değerleri doğrudan kullanılır.
+
+### Board Settings
+
+- **Setup and Hold Derating:** `Use Altera's default settings`
+- **Channel Signal Integrity:** `Use Altera's default settings`
+- **Board skews:** `CK=0.6 ns`, `DQS=0.6 ns`, `CK-DQS=-0.01..+0.01 ns`,
+  DQS group içi/arası skew=`0.02 ns`, DQ-DQS ortalama=`0 ns`,
+  address/command bus skew=`0.02 ns`.
+
+Bu değerler PCB iz uzunluğu, empedans ve yansıma etkilerinin timing analizine
+katılmasını sağlar. Sadece bu kartın reference-board değerleri olarak
+kullanılmalıdır; başka kartta veya PCB değişikliğinde HyperLynx/sinyal
+bütünlüğü analizi ya da kart üreticisinin değerleri gerekir.
+
+### Tekrar kurulum kısa akışı (HPS + Platform Designer)
+
+Bu sıra, `07_axi_button_gesture` projesindeki ilk HPS-to-FPGA AXI-Lite
+bağlantısını tekrar oluşturmak için kısa kontrol listesidir:
+
+```
+Quartus projesi (top-level = system_top)
+  -> Tools > Platform Designer
+  -> File > Save As > soc_system.qsys
+  -> Clock Source: clk + reset export
+  -> Arria V/Cyclone V Hard Processor System ekle (hps_0)
+  -> FPGA Interfaces:
+       FPGA-to-HPS = Unused
+       HPS-to-FPGA = Unused
+       Lightweight HPS-to-FPGA = 32-bit
+       f2h_sdram0 portunu kaldır
+       MPU standby/event'i kapat
+  -> Peripheral Pins:
+       SDIO = HPS I/O Set 0, 4-bit Data
+       UART0 = HPS I/O Set 0, No Flow Control
+  -> SDRAM: bu bölümdeki DDR3 parametrelerini uygula
+  -> h2f_lw_axi_clock -> clk_0.clk bağla
+  -> h2f_lw_axi_master export adı = h2f_lw_axi
+  -> h2f_reset export adı = h2f_reset
+  -> Save
+  -> Generate HDL: synthesis = VHDL, simulation = None, .bsf = kapalı
+  -> soc_system/synthesis/soc_system.qip dosyasını Quartus projesine ekle
+  -> system_top içinde soc_system'i instance et ve export edilmiş AXI master'ı
+     mevcut axi_lite_slave instance'ına bağla
+```
+
+#### Quartus 25.1 + WSL notu
+
+HPS DDR3 HDL üretimi `Nios II Command Shell -> make all` çağrısını yapar.
+Quartus 25.1 Standard bu çağrı için WSL ister. Hata `hps_AC_ROM.hex` bulunamadı
+veya `Nios II Command Shell.bat ... make all` biçimindeyse önce şunları kontrol et:
+
+```powershell
+wsl -l -v
+wsl --set-default Ubuntu
+```
+
+`Ubuntu` satırının başında `*` görünmelidir. `docker-desktop` varsayılan
+dağıtımsa Nios II shell doğru Linux build ortamını bulamayabilir. Ubuntu hiç
+kurulu değilse yönetici PowerShell'de `wsl --install -d Ubuntu` çalıştırılır;
+ilk Ubuntu açılışında kullanıcı hesabı oluşturulur.
+
+Ubuntu terminalini Başlat menüsünden **Ubuntu** uygulamasıyla veya PowerShell'de
+`wsl` komutuyla aç. Quartus'un WSL içindeki Nios shell betiği ayrıca `wsl`,
+`make` ve `dos2unix` araçlarını arar. Bunları Ubuntu içinde kur:
+
+```bash
+sudo apt update
+sudo apt install -y wsl make dos2unix
+
+# Her üç aracın da bulunduğunu doğrula:
+which wsl
+which make
+which dos2unix
+```
+
+Her `which` komutu örneğin `/usr/bin/wsl`, `/usr/bin/make` ve
+`/usr/bin/dos2unix` gibi bir yol döndürmelidir. `wsl` paketi bulunamazsa
+alternatif paket adı `wslu` olabilir:
+
+```bash
+sudo apt install -y wslu make dos2unix
+```
+
+Sonra Quartus/Platform Designer kapatılıp yeniden açılır ve `Generate HDL`
+tekrar denenir. Başarılı sonuçta logda şu satır görülür:
+
+```text
+Info: qsys-generate succeeded.
+```
+
+`Configuration/HPS-to-FPGA user 0 clock ... 97.368421 MHz` uyarısı bu ilk
+tasarımda engel değildir: HPS-to-FPGA user clock'ları etkin değildir ve AXI
+bridge `clk_0` üzerinden `CLOCK_50` domain'inde çalışır.

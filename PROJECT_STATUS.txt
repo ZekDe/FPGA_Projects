@@ -1,0 +1,116 @@
+==============================================================================
+  FPGA ile Donanım Tasarımı Öğrenme Yolculuğu — Durum Özeti
+==============================================================================
+
+AMAÇ
+----
+C gömülü sistemler geçmişimden gelerek FPGA donanım tasarımı öğrenmek.
+Hedef: DE0-Nano-SoC kartında, IMU sensöründen veri alıp HPS (ARM Cortex-A9,
+Linux) tarafına aktaran tam bir donanım/yazılım köprüsü kurmak.
+
+  IMU sensor → SPI → async FIFO → AXI-Lite → HPS (Linux) → UART ile PC
+
+Yaklaşım: Her temel modülü (synchronizer, FIFO, divider, AXI slave vb.) sıfırdan
+kendi VHDL'imle yazmak. Vendor IP (black-box) kullanmamak, tam transparan ve
+DO-254 audit'e uygun VHDL hedeflemek. Yapay zekayı bir öğrenme hocası olarak
+kullanmak; ürettiği her satırı incelemek, anlamak, gerektiğinde düzeltmek.
+
+
+NE YAPTIK (tamamlanan fazlar)
+-----------------------------
+1. FSM + temel CDC primitifleri
+   - button_gesture: tek/çoklu tıklama, uzun basış, ivmeli repeat algılayıcı
+     (C'den VHDL'e birebir port). debounce, edge detection, TON timer, 2-FF
+     synchronizer.
+
+2. CDC derin
+   - Multi-bit CDC problemini simülasyonda kanıtladık (binary 15 hata, gray 0).
+   - gray_pkg (binary↔gray dönüşüm), async req/ack handshake, toggle-sync pulse
+     CDC modülleri yazıldı.
+
+3. FIFO (sync + async)
+   - Sync FIFO: dairesel tampon, N+1 bit pointer hilesi, inferred BRAM (M10K).
+   - Async FIFO: gray pointer + 2-FF (Cliff Cummings mimarisi). 3 clock domain.
+
+4. BRAM (teori)
+   - Inferred vs instantiated, single/dual-port modları, write/read-first.
+
+5. AXI-Lite Slave
+   - HPS ↔ FPGA köprüsü: 5 kanal (AW/W/B/AR/R), VALID/READY handshake.
+   - Register file: 6 config (rw) + 2 status (ro) register.
+   - button_gesture'a bağlandı; sim'de HPS config yazdı, buton tepki verdi.
+
+Ek: PLL (50→100+33 MHz), pipelined divider (32-stage, timing closure),
+timing closure pratikleri (sta.rpt okuma, SDC, set_clock_groups).
+
+
+ŞİMDİ NEREDEN BİZ
+-----------------
+- FPGA fabric tarafı hazır: button_gesture + async FIFO + AXI-Lite Slave
+  birbirine entegre edildi ve simülasyonda doğrulandı.
+- Platform Designer'da `soc_system.qsys` oluşturuldu ve HPS IP eklendi.
+  - HPS DDR3: DE0-Nano-SoC'nin 1 GB / 32-bit / 400 MHz DDR3'ü için
+    ayarlandı; HDL üretimi başarıyla tamamlandı (`qsys-generate succeeded`).
+  - Lightweight HPS-to-FPGA AXI bridge: 32-bit etkin.
+  - Köprü clock'u: `clk_0` / `CLOCK_50` (50 MHz).
+  - HPS çevre birimleri: microSD için SDIO Set 0 / 4-bit, seri konsol için
+    UART0 Set 0 / No Flow Control etkin.
+  - HPS AXI master ve HPS-to-FPGA reset, `h2f_lw_axi` ve `h2f_reset`
+    adlarıyla Platform Designer dışına export edildi.
+- HPS ile FPGA mantığı henüz VHDL top-level'da kablolanmadı; kartta HPS/Linux
+  erişimi henüz test edilmedi.
+
+SIRADAKİ ADIM
+-------------
+Platform Designer çıktısını mevcut tasarıma bağlamak:
+  1. `soc_system/synthesis/soc_system.qip` dosyasını Quartus projesine ekle.
+  2. Üretilen `soc_system` component/port bildirimini incele.
+  3. `system_top.vhd` içinde `soc_system` instance'ı oluştur:
+     - CLOCK_50 / reset bağla,
+     - HPS DDR3 ve `hps_io` pinlerini top-level fiziksel portlara bağla,
+     - export edilen `h2f_lw_axi` AXI master sinyallerini mevcut
+       `u_axi : axi_lite_slave` instance'ına bağla,
+     - `h2f_reset` polaritesini generated porttan doğrulayıp AXI slave resetine
+       güvenli biçimde uygula.
+  4. HPS SDRAM'in ürettiği pin-assignment TCL betiğini sentez sonrası,
+     fitter öncesi uygula.
+  5. Quartus compile; sonra kartta HPS/Linux aç ve `/dev/mem` ile config
+     register yazma/status okuma testini yap.
+
+Not: `axi_lite_slave.vhd` kullanılmaya devam edecek. İlk entegrasyonda onu
+Platform Designer custom component'i yapmak yerine, HPS AXI master'ı export
+edilip top-level'da mevcut slave'e kablolanacak.
+
+Daha ilerisi (Faz 7-8): Linux tarafında UIO driver, sonra IMU SPI master.
+
+
+KLASÖR YAPISI
+---------------
+VHDL_Projects/
+├── MyLibs/                 ← Yeniden kullanılabilir IP kütüphanesi
+│   ├── synchronizer.vhd    ← 2-FF CDC
+│   ├── ton.vhd             ← IEC 61131-3 timer
+│   ├── button_gesture.vhd  ← buton gesture FSM
+│   ├── divider_pipelined.vhd
+│   ├── gray_pkg.vhd        ← binary↔gray dönüşüm fonksiyonları
+│   ├── fifo_sync.vhd
+│   ├── fifo_async.vhd      ← iki clock domain arası FIFO
+│   ├── axi_lite_slave.vhd  ← HPS ↔ FPGA register file köprüsü
+│   ├── cdc_handshake_*.vhd ← req/ack handshake
+│   ├── cdc_pulse_sync.vhd  ← toggle-sync pulse CDC
+│   └── README.md           ← tüm kütüphane dokümantasyonu
+├── 04_button_gesture/      ← Faz 1 uygulaması (kartta test edildi)
+├── 05_fifo_sync/           ← Faz 3.1 uygulaması (kartta test edildi)
+├── 06_fifo_async/          ← PLL + async FIFO (kartta test edildi)
+└── 07_axi_button_gesture/  ← AXI Slave + button_gesture + HPS/Platform Designer
+    └── soc_system.qsys     ← HPS, DDR3, SDIO/UART ve lightweight AXI bridge
+
+
+KART
+----
+DE0-Nano-SoC (Cyclone V SoC):
+  - FPGA fabric: Cyclone V 5CSEMA4U23C6 (85K LE, ~600 M10K, 2 PLL)
+  - HPS: ARM Cortex-A9 çift çekirdek @ 925 MHz, DDR3, Linux
+  - 2 buton (KEY), 4 switch (SW), 8 LED, GPIO header
+
+==============================================================================
