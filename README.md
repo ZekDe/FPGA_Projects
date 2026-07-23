@@ -585,44 +585,44 @@ Quartus projesi (top-level = system_top)
   -> Save
   -> Generate HDL: synthesis = VHDL, simulation = None, .bsf = kapalı
   -> soc_system/synthesis/soc_system.qip dosyasını Quartus projesine ekle
-  -> system_top içinde soc_system'i instance et ve export edilmiş AXI master'ı
-     mevcut axi_lite_slave instance'ına bağla
+  -> system_top içinde soc_system'i instance et ve export edilmiş AXI3 master'ı
+     genel axi3_mmio_regbank instance'ına bağla
 ```
 
 ### AXI3 MMIO register-bank mimarisi (07_axi_button_gesture)
 
 Cyclone V HPS'nin `h2f_lw_axi` export'u **AXI3 master**'dir. Bu, Platform
-Designer'da AXI4/AXI3 seÃ§ilerek deÄŸiÅŸtirilebilen bir IP tercihi deÄŸil; HPS
-hard-IP iÃ§indeki bridge'in arayÃ¼zÃ¼dÃ¼r. Bu nedenle ilk HPSâ€“FPGA MMIO projesinde
-doÄŸrudan AXI3 slave kullanÄ±lÄ±r:
+Designer'da AXI4/AXI3 seçilerek değiştirilebilen bir IP tercihi değil; HPS
+hard-IP içindeki bridge'in arayüzüdür. Bu nedenle ilk HPS–FPGA MMIO projesinde
+doğrudan AXI3 slave kullanılır:
 
 ```text
 Linux / HPS
   -> h2f_lw_axi (Cyclone V HPS AXI3 master)
-  -> axi3_mmio_regbank.vhd (genel, tekrar kullanÄ±labilir AXI3 slave)
-  -> uygulama mantÄ±ÄŸÄ± (bu projede button_gesture)
+  -> axi3_mmio_regbank.vhd (genel, tekrar kullanılabilir AXI3 slave)
+  -> uygulama mantığı (bu projede button_gesture)
 ```
 
-`axi3_mmio_regbank.vhd` uygulamadan baÄŸÄ±msÄ±zdÄ±r. `G_REG_COUNT` generic'i,
-sentez anÄ±nda register sayÄ±sÄ±nÄ± belirler; bu projede `16` seÃ§ilmiÅŸtir. Her
+`axi3_mmio_regbank.vhd` uygulamadan bağımsızdır. `G_REG_COUNT` generic'i,
+sentez anında register sayısını belirler; bu projede `16` seçilmiştir. Her
 register 32 bittir ve `4 * indeks` byte offset'indedir. Bu nedenle register 0
 `+0x00`, register 1 `+0x04`, ... register 15 `+0x3C` adresindedir.
 
-ModÃ¼lÃ¼n kontrollÃ¼ olarak desteklediÄŸi AXI3 alt kÃ¼mesi:
+Modülün kontrollü olarak desteklediği AXI3 alt kümesi:
 
-- 32-bit, hizalÄ± tek-beat eriÅŸim (`AxSIZE=2`, `AxLEN=0`)
-- BaÄŸÄ±msÄ±z AW ve W kanallarÄ±; adres veya veri Ã¶nce gelebilir
-- HPS'nin AXI ID'sini `BID`/`RID` cevaplarÄ±nda geri verme
-- `WSTRB` ile byte bazlÄ± yazma
-- read-only bit maskesi, FPGA tarafÄ±ndan readback override ve write-pulse
-  ile W1C/command davranÄ±ÅŸÄ±
+- 32-bit, hizalı tek-beat erişim (`AxSIZE=2`, `AxLEN=0`)
+- Bağımsız AW ve W kanalları; adres veya veri önce gelebilir
+- HPS'nin AXI ID'sini `BID`/`RID` cevaplarında geri verme
+- `WSTRB` ile byte bazlı yazma
+- read-only bit maskesi, FPGA tarafından readback override ve write-pulse
+  ile W1C/command davranışı
 
-Burst veya yanlÄ±ÅŸ geniÅŸlik isteÄŸi sessizce yanlÄ±ÅŸ yorumlanmaz; `SLVERR`
-cevabÄ± Ã¼retilir. Bu kÄ±sÄ±tlama kontrol/status register'Ä± olan bir MMIO
-Ã§evre birimi iÃ§in bilinÃ§li ve normaldir. BÃ¼yÃ¼k blok veri/DMA gereksiniminde
-ayrÄ± bir AXI3/AXI4-Full veya Avalon/DMA mimarisi tasarlanÄ±r.
+Burst veya yanlış genişlik isteği sessizce yanlış yorumlanmaz; `SLVERR`
+cevabı üretilir. Bu kısıtlama kontrol/status register'ı olan bir MMIO
+çevre birimi için bilinçli ve normaldir. Büyük blok veri/DMA gereksiniminde
+ayrı bir AXI3/AXI4-Full veya Avalon/DMA mimarisi tasarlanır.
 
-Bu proje iÃ§in HPS lightweight bridge taban adresi `0xFF200000`'dir:
+Bu proje için HPS lightweight bridge taban adresi `0xFF200000`'dir:
 
 ```text
 0xFF200000 + 0x00 : debounce_ms                 (RW)
@@ -633,12 +633,12 @@ Bu proje iÃ§in HPS lightweight bridge taban adresi `0xFF200000`'dir:
 0xFF200000 + 0x14 : repeat_ramp_ms               (RW)
 0xFF200000 + 0x18 : button_status               (RO, sticky)
 0xFF200000 + 0x1C : event_clear                 (WO, write-one-to-clear)
-0xFF200000 + 0x20..0x3C : genel amaÃ§lÄ± RW alan
+0xFF200000 + 0x20..0x3C : genel amaçlı RW alan
 ```
 
-`tb_axi3_mmio_regbank.vhd` Questa simÃ¼lasyonunda ÅŸunlarÄ± kontrol eder:
-W kanalÄ±nÄ±n AW'den Ã¶nce gelmesi, byte-enable yazma, read-only alanÄ±n korunmasÄ±
-ve hatalÄ± burst isteÄŸinin `SLVERR` ile reddedilmesi.
+`tb_axi3_mmio_regbank.vhd` Questa simülasyonunda şunları kontrol eder:
+W kanalının AW'den önce gelmesi, byte-enable yazma, read-only alanın korunması
+ve hatalı burst isteğinin `SLVERR` ile reddedilmesi.
 
 #### Quartus 25.1 + WSL notu
 
