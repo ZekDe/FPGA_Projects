@@ -1,0 +1,690 @@
+# MyLibs — Reusable FPGA IP Kütüphanesi
+
+Bu klasör, FPGA donanım modüllerinin **yeniden kullanılabilir (reusable)** bloklarını
+içerir. Tüm bloklar **vendor-bağımsız** (vendor-independent) VHDL ile yazılmıştır:
+Quartus, Vivado, ModelSim, Questa — hepsinde çalışır. Black-box IP yoktur, DO-254
+audit için tam transparan VHDL'dir.
+
+## Yol Haritası (8 Faz)
+
+Bu kütüphane, adım adım bir öğrenme yolculuğunun çıktısıdır. Her faz bir önceki
+fazın üstüne inşa edilir:
+
+
+
+## Bağımlılık Ağacı (Dependency Tree)
+
+Bu ağacı oku: bir modülü kullanacaksan, altındaki tüm modülleri de projeye eklemelisin.
+
+```
+button_gesture          [Faz 1] buton gesture FSM
+├─ synchronizer         [Faz 1]
+├─ ton                  [Faz 1]
+└─ divider_pipelined    [Faz 6 ön]
+
+system_top (04_button_gesture)
+├─ button_gesture
+├─ time_base_ms         [Faz 1]
+├─ led_pulse            [Faz 1]
+└─ edge_detector        [Faz 1]
+
+cdc_handshake_rx        [Faz 2]
+└─ synchronizer         [Faz 1]
+
+cdc_handshake_tx        [Faz 2]
+└─ synchronizer         [Faz 1]
+
+cdc_pulse_sync          [Faz 2] tek-bit pulse CDC (toggle + 2-FF + edge)
+└─ synchronizer         [Faz 1]
+
+fifo_sync               [Faz 3] senkron FIFO (tek clock)
+└─ (bagimlilik yok - kendi basina)
+
+fifo_async              [Faz 3] asenkron FIFO (iki clock domain)
+├─ gray_pkg             [Faz 2]
+└─ synchronizer         [Faz 1] (her pointer biti icin ayri 2-FF)
+```
+
+## Hangi Dosyaları Projeye Eklemeliyim?
+
+Her `system_top` örneğinin **başında** bir "DOSYA LİSTESİ" (manifest) bölümü vardır.
+O bölüm, o system_top'u derlemek için gereken **tam dosya listesini** verir — QSF
+satırları olarak, kopyala-yapıştır hazır.
+
+Kural: **system_top başındaki listeyi oku → QSF'ye ekle → derle.**
+
+Eğer hangi dosyaya ihtiyacın olduğunu bilmiyorsan, **bağımlılık ağacını** oku: bir
+modülü kullanacaksan, onun altındaki tüm modülleri de eklemelisin.
+
+
+## Testbench Tuzakları ve Çözümleri
+
+Bu bölüm, bu kütüphaneyi geliştirirken karşılaşılan **gerçek hataları** ve çözümlerini
+toplar. Yeni başlayanların aynı tuzaklara düşmemesi için. Sıralama: en sık karşılaşılandan.
+
+### 1. Çift Sürücü (Multiple Drivers) → 'X' (Unknown)
+
+**Belirti:** Bir register, simülasyonda `0xXXXX...` olarak görünüyor. Çıkışı etkileyen
+tüm karşılaştırmalar `false` olduğundan hiçbir şey çalışmıyor (örneğin FSM asla tetiklenmiyor).
+
+**Sebep:** Aynı sinyale **iki farklı process** atama yapıyor. VHDL'in resolution function'ı
+iki driver farklı değer tuttuğunda **'X'** üretir. Derleme hatası vermez — sessizce bozar.
+
+**Örnek:** `button_gesture.vhd`'de `period_reg` eski sürümde hem `p_period_reg` hem `p_state`
+tarafından sürülüyordu. Sonuç: `period_reg = 0x000000XX` → repeat event'leri hiç patlamıyordu.
+
+**Çözüm:**
+- Bir register'ı **sadece tek bir process** içinde yaz.
+- Birden fazla yerde güncellemen gerekiyorsa, tüm atamaları aynı process'in içine koy.
+- İkinci bir clocked process açma. C'deki gibi "bu değişkeni burada da değiştireyim"
+  düşünce VHDL'de geçerli değil.
+
+**İpucu:** Sentez sonrası Quartus'ta "Cannot resolve tri-state driver" veya
+"multiple drivers" uyarısı da aynı soruna işaret eder.
+
+### 1b. Çift Sürücü - Kombinasyonel vs Process (system_top'ta yaşandı)
+
+**Belirti:** `fifo_wr_data` gibi bir sinyal hem `begin` sonrası kombinasyonel atamada
+hem de bir clocked process içinde atanıyor. Sonuç yine 'X'.
+
+**Sebep:** "Process içinde yazıyorum" ile "dışarıda sürekli atama yapıyorum" aynı sinyale
+çakışır — VHDL her ikisini de ayrı driver sayar. `fifo_wr_data <= SW ...` dışarıda, process
+içinde `fifo_wr_data <= (others => '0')` yazarsan → iki driver → 'X'.
+
+**Örnek:** `05_fifo_sync/src/system_top.vhd`'nin ilk versiyonunda `fifo_wr_data` hem Bölüm 3'te
+kombinasyonel, hem Bölüm 5'teki `p_fifo_ctrl` process'inde reset/default olarak atandı.
+
+**Çözüm:** Bir sinyal ya process içinde olur (registered) ya dışarıda (kombinasyonel).
+İkisi birden olmaz. `fifo_wr_data`'yı process dışında tut, process içine hiç dokunma.
+
+### 2. Delta Cycle (FWFT / Kombinasyonel Çıkış Tuzağı)
+
+**Belirti:** Testbench'te `wait until rising_edge(clk)` sonrası `assert` hatalı değer
+görüyor, ama dalga formu doğru çalışıyor.
+
+**Sebep:** VHDL'de sinyal atamaları bir delta cycle sonra etkili olur. Kombinasyonel
+çıkışlar (örneğin FIFO'da FWFT `rd_data = ram[rd_ptr]`) clock edge'inde güncellenen
+bir pointer'a bağlıdır. Edge geldiğinde `rd_ptr` henüz güncellenmemiş olabilir.
+
+**Örnek:** `tb_fifo_sync.vhd`'de `rd_data`'yı assert etmek için edge sonrası
+`wait for 1 ps` eklemek gerekti. Aksi halde `rd_ptr`'in eski değerinden okuma yapıyorduk.
+
+**Çözüm:**
+- Clock edge sonrası `wait for 1 ps` ekle (sinyallerin yerleşmesi için).
+- Ya da `wait until rising_edge(clk) and <sinyal> = <deger>` şeklinde bekle.
+
+### 2b. Clamp (Üst/Alt Sınır) Kaybı → Underflow → FSM Dondu
+
+**Belirti:** Bir ramp (örneğin repeat ramp ivmesi) başlangıçta güzel çalışıyor, giderek
+hızlanıyor, ama belirli bir noktada **aniden duruyor** — sonraki event'ler hiç gelmiyor.
+
+**Sebep:** Bir değer ramp son değerini geçince **clamp'lenmemiş** (sınırlanmamış).
+Unsigned çıkarmada bu **underflow** yaratır: `start - quotient` eğer `quotient > start`
+ise → `4294967295` gibi dev bir değer → karşılaştırma asla true olmaz → FSM donar.
+
+**Örnek:** `button_gesture.vhd`'de repeat period hesabı: `period = repeat_start_ms -
+(delta*elapsed)/ramp_ms`. `elapsed` ramp süresini geçince quotient delta'yı aşıyor,
+`start - quotient` underflow'a giriyor, period devasa oluyor → repeat event'leri duruyor.
+C referans kodunda bu `if (elapsed >= ramp_ms) period = end_ms` ile **clamp**'leniyordu,
+ama VHDL portunda o dal unutulmuştu.
+
+**Çözüm:** Ramp hesaplarında **clamp** şarttır. En temiz yer: dividend'i clample:
+`elapsed_calc <= elapsed_raw when elapsed_raw <= ramp_ms else ramp_ms`.
+Böylece quotient asla delta'yı geçemez, underflow imkânsız olur. C referansındaki
+üç dallı if'in (ramp bitince end_ms'de sabit) birebir karşılığı budur.
+
+### 3. Doğru Test Mantığı Kurmamak (False Positive / Negative)
+
+**Belirti:** Test "geçiyor" gibi görünüyor ama aslında hiçbir şey test etmiyor.
+Veya test sürekli fail veriyor ama DUT aslında doğru çalışıyor.
+
+**Sebep:** Testbench'in tespit kuralı yanlış. En sık görülen biçimi: iki clock domain'li
+testlerde, yavaş domain her zaman geride kalır → `|diff| > 1` her an tetiklenir →
+test CDC hatası değil, sadece "yavaş domain geride" diye raporlar.
+
+**Örnek:** `tb_gray_cdc.vhd`'nin ilk versiyonunda `cnt_dst` ile `cnt_src`'i doğrudan
+kıyasladık — ama dst clock daha yavaş olduğu için dst daima geride kaldı, bu yüzden
+test her an "hata" diyordu. Oysa gray code gayet iyi çalışıyordu.
+
+**Çözüm:**
+- **Ne test ettiğini net tanımla.** CDC hatası = "alıcı, vericinin hiç üretmediği bir
+  değer yakaladı mı?" Bu, "alıcı vericiden geride mi kaldı?" demek değil.
+- Doğru kural: "alıcının yakaladığı değer, vericinin ürettiği değerler kümesinde mi?"
+  (pencere kontrolü).
+- "Test geçti" ile "test anlamlı bir şey test etti" farklı şeyler.
+
+### 4. Sözdizimi Hatalarının Yüzeyde Okunması
+
+**Belirti:** Derleyici "Unknown identifier X" veya "No feasible entries for infix
+operator" hatası veriyor, ama sen o identifier'ı tanımladığını sanıyorsun.
+
+**Sebep:** Derleyici hatayı bulunduğu yerde raporlar, ama kök sebep genellikle daha
+yukarıda. En sık görüleni: bir package veya `use` statement eksik.
+
+**Örnek:** `gray_pkg.vhd`'yi yazarken `xor` operatörü "No feasible entries" hatası verdi.
+`xor` kullanıyordum ama package `use ieee.std_logic_1164.all` eklemeden `std_logic`
+tipini kullandım. Derleyici `xor`'u suçladı, ama asıl sorun tipin tanımsız olmasıydı.
+
+**Çözüm:**
+- Derleme hatalarını yüzeyde okuma. "xor bulunamadı" → aslında tip tanımsız.
+- Package'larında her zaman `library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;`
+  olsun.
+- Hata satırına değil, hata satırının **üstündeki** declaration'lara bak.
+
+### 5. Çok Büyük/Çok Küçük Simülasyon Parametreleri
+
+**Belirti:** Simülasyon beklenen davranışı göstermiyor ama DUT doğru.
+
+**Sebep:** Testbench'teki parametreler (skew, frekans, bekleme süresi) çok küçük veya çok
+büüyük. İdeal sıfır-gecikmeli simülasyonda skew yoktur, bu yüzden CDC hatalarını görmek
+için realistic skew modellemek gerekir.
+
+**Örnek:** `tb_cdc_binary_vs_gray.vhd`'de başta 0/50/100/150 ps skew kullandık → 0 hata
+geldi (skew penceresi çok küçük). Skew'ları 0/600/1200/1800 ps'ye çıkarınca binary'de
+15 hata, gray'de 0 hata net olarak görüldü.
+
+**Çözüm:**
+- CDC testlerinde realistic skew modelle (her bit'e farklı transport delay).
+- Skew değerlerini değiştirerek sonucun değişmediğini doğrula (robustness).
+- Simülasyon "geçti" diye yetinme — eğer hiç hata görmüyorsan, belki test çok hafiftir.
+
+### 6. Sentez Dışı Yapıların Simülasyonda Çalışması
+
+**Belirti:** Simülasyon mükemmel, ama sentezde hata veya donanımda farklı davranış.
+
+**Sebep:** Simülasyon tüm VHDL'i destekler, ama sentezleyici sadece sentezlenebilir
+alt kümesini destekler. En sık görüleni: `integer` tipli sayaçlar çok büyük aralıklarla
+(2^31+) veya initial değerleri.
+
+**Çözüm:**
+- `integer range 0 to N` kullan (finite aralık).
+- Initial değerler (`:= 0`) sentezlenir ama FPGA açılışta garantili değildir;
+  **reset şart**. Senin tüm modüllerinde `rst_n` var, iyi.
+- `for` loop'lar sentezlenir ama **sabit sınır** olmalı (variable sınır sentezlenmez).
+
+---
+
+## Konu Anlatımları (Teknik Referans)
+
+Bu bölüm, unutursan bakacağın teknik referans. Her konu kısa, örnekli ve
+"neden?" sorusuna cevap verecek şekilde yazıldı.
+
+### Timing Closure Nedir?
+
+FPGA'da her flip-flop, veriyi clock'un yükselen kenarında örnekler. Timing
+closure = **tüm FF'lerin zamanında veriyi aldığını kanıtlamak.** Quartus'un
+TimeQuest Timing Analyzer aracı bunu sentezden sonra yapar.
+
+**Slack** = her yol (path) için "ne kadar boşluk var" metriği:
+```
+Setup slack = required_time - arrival_time
+            = clock_period - setup_time - data_path_delay
+```
+- **Pozitif slack** = yol zamanında bitiyor (iyi)
+- **Negatif slack** = yol çok uzun, clock kaçırılıyor (kötü — donanım hata verir)
+
+**Üç tür slack** TimeQuest raporunda görünür:
+- **Setup slack:** veri zamanında ulaştı mı? (Pozitif = iyi)
+- **Hold slack:** veri çok erken gelmedi mi? (Pozitif = iyi)
+- **Minimum Pulse Width:** clock pulse genişliği yeterli mi?
+
+**TNS (Total Negative Slack)** = tüm ihlal edilmiş yolların slack toplamı:
+- `TNS = 0` → **timing closure sağlandı** (hiç ihlal yok)
+- `TNS < 0` → ihlal var, donanımda sorun olabilir
+
+**Setup vs Hold ihlali — çözümleri farklı:**
+| İhlal | Sebep | Çözüm |
+|-------|-------|-------|
+| Setup negatif | Yol çok uzun | Pipeline ekle, kayıt ekle |
+| Hold negatif | Yol çok kısa | Quartus otomatik delay zinciri ekler |
+
+`divider_pipelined.vhd`'nin hikayesi tam budur: combinational division setup
+slack negatifti (yol 32 cascade subtract çok uzun), pipeline ekledik, her stage
+kısa oldu, slack pozitif oldu.
+
+### Hold Fix — FPGA'nın Hassas Dengesi
+
+Setup ihlali çözümü (pipeline) sezgisel gelse de, **hold ihlali** tersdir ve
+FPGA'nın ne kadar ince bir dengede çalıştığını gösterir:
+
+- **Setup ihlali:** veri ÇOK GEÇ geldi (yol çok uzun) → kullanıcı pipeline ekler
+- **Hold ihlali:** veri ÇOK ERKEN geldi (yol çok kısa) → Quartus **otomatik**
+  olarak yola **delay zinciri** (seri buffer/inverter) ekler
+
+Yani iki komşu FF arasındaki yol **çok kısa** ise, kaynak FF'in çıkışı hedef
+FF'e o kadar hızlı ulaşır ki, hedef FF bir önceki cycle'ın verisini kaçırır
+(veri çok erken değişir). Quartus bunu router'da **yapay gecikme ekleyerek**
+çözer — yola birkaç inverter/buffer koyar, veriyi yavaşlatır, hold penceresine
+oturtur. Buna **hold fix** denir ve sentezden sonra fitter otomatik yapar.
+
+Bu mekanizma gösterir ki FPGA'de timing sadece "yol ne kadar uzun" değil,
+**"yol ne kadar kısa"** da sorun yaratabilir. İdeal: her yol ne çok uzun ne
+çok kısa — denge.
+
+**Pratik kural:** Setup ihlalini kullanıcı (sen) çözersin (pipeline). Hold
+ihlalini Quartus çözer (delay chain). Senin projelerinde hold slack pozitif
+(TNS=0) olduğu için fitter bunu başardı, senin müdahale etmen gerekmedi.
+
+### Timing Raporu Nasıl Okunur?
+
+`output_files/<proje>.sta.rpt` dosyası TimeQuest çıktısıdır. Önemli bölümler:
+
+**1. Fmax tablosu:** her clock'un elde edebildiği maksimum frekans
+```
+; Fmax       ; Clock Name
+; 125.55 MHz ; CLOCK_50       ← hedef 50 MHz, elde 125 MHz (rahat)
+; 231.43 MHz ; ...general[0]  ← PLL c0 = wr_clk (100 MHz hedef)
+; 281.37 MHz ; ...general[1]  ← PLL c1 = rd_clk (33 MHz hedef)
+```
+
+**2. Worst-case Slack tablosu:** her clock için en kötü yol
+```
+; Clock          ; Setup  ; Hold  ; Recovery ; Removal ; Min Pulse Width
+; Worst-case     ; 4.780  ; 0.167 ; N/A       ; N/A     ; 1.250
+; CLOCK_50       ; 12.035 ; 0.167
+; wr_clk         ; 4.780  ; 0.168  ← en dar domain (100 MHz, mantıklı)
+```
+
+**3. Design-wide TNS:** en kritik metrik
+```
+; Design-wide TNS ; 0.0    ← timing closure SAĞLANDI
+```
+
+### PLL Clock İsimlerini Bulma (get_pins)
+
+SDC'de `create_generated_clock` için PLL çıkış pininin tam hiyerarşik adı
+lazım (`pll_2clk:u_pll|...|outclk_wire[0]`). Üç yöntem:
+
+1. **TimeQuest `report_clocks`** (en sağlam) — Tools → Timing Analyzer,
+   Tcl konsoluna `report_clocks` yaz. Tüm clock'ları listeler.
+2. **Node Finder** (en pratik) — Tools → Node Finder, Filter: "Clocks",
+   `outclk` ara, tam yolu kopyala.
+3. **fit.rpt oku** (en düşük seviye) — derleme raporunda pin adları geçer.
+
+**İş akışı:** İlk derlemede sadece `derive_pll_clocks` yaz (Quartus otomatik
+tanır). `report_clocks` ile isimleri öğren. Sonra `create_generated_clock` ile
+kısa isim ver (`wr_clk`, `rd_clk`). İkinci derlemede timing analizi.
+
+### SDC Komutları Referansı
+
+| Komut | Ne yapar | Ne zaman kullan |
+|-------|----------|-----------------|
+| `create_clock` | Ana clock tanımla | Her zaman (CLOCK_50 vb.) |
+| `derive_pll_clocks` | PLL clock'larını otomatik türet | PLL varsa |
+| `create_generated_clock` | PLL çıkışına kısa isim ver | SDC okunabilirliği için |
+| `set_false_path` | Bir yolu analizden çıkar | Reset, LED, async input |
+| `set_clock_groups -asynchronous` | Domain'leri birbirinden ayır | CDC (multi-clock) |
+| `set_multicycle_path` | Bir yola ekstra cycle tanı | AXI handshake, enable'lı register |
+
+### Multicycle Path vs False Path
+
+İkisi de "bu yolu analizden çıkar/rahatlat" ama farklı:
+- **False path:** yol ASLA analiz edilmemeli (reset, LED). "Bu yol timing değil."
+- **Multicycle path:** yol analiz edilsin ama **N cycle süre** tanı. "Bu yol
+  1 cycle'da değil, 3 cycle'da tamamlanır."
+
+Yanlış false path yazarsan kritik yolu gizlersin → donanım hatası.
+Yanlış multicycle yazarsan yanlış pozitif slack → yine donanım hatası.
+
+### Recovery ve Removal (Async Reset İçin)
+
+Async reset (`rst_n`) timing analizde iki metrik verir:
+- **Recovery:** reset bırakıldıktan sonra ilk clock edge'inden ÖNCE kararlı olma
+  süresi (setup gibi)
+- **Removal:** reset bırakıldıktan sonra clock edge'inden SONRA kalma süresi
+  (hold gibi)
+
+Çoğu tasarım async reset için `set_false_path -from rst_n` yazar, TimeQuest
+bunları analiz dışı bırakır. Senin tasarımın raporunda `Recovery/Removal: N/A`
+çünkü reset async.
+
+### Async FIFO'da CDC ve Timing
+
+`fifo_async.vhd`'de gray pointer yolları `set_clock_groups -asynchronous`
+ile timing analizden çıkarıldı. Çünkü:
+- Kaynak rd_clk, hedef wr_clk (farklı domain'ler)
+- Arada 2-FF synchronizer var (metastability'e izin verilmiş)
+- Bu yol timing closure OLAMAZ ama **CDC kurallarıyla güvenli**
+
+Timing closure'ın CDC boyutu: **analizden çıkarmak** = hatayı gizlemek değil,
+doğru analiz kapsamını belirlemektir.
+
+### AXI-Lite Nedir? (Faz 5)
+
+AXI = ARM'nin tasarladığı veri taşıma protokolü. **AXI-Lite** basit hali —
+register erişimi için, 32-bit adres + 32-bit veri. HPS (ARM Cortex-A9) ile
+FPGA fabric arasındaki köprü bu protokolle çalışır.
+
+**Temel: VALID/READY handshake (decoupled):**
+```
+Master (HPS):  "Verim hazır"  →  VALID = 1
+Slave  (FPGA): "Alabilirim"   →  READY = 1
+İkisi aynı cycle'da '1'      →  TRANSFER GERÇEKLEŞİR
+```
+Kural: VALID kalkınca transfer olana kadar düşemez (sözünden dönmez). READY
+serbestçe değişebilir. Bu, cdc_handshake'teki req/ack mantığının çok kanallısı.
+
+**5 ayrı kanal (her birinin kendi VALID/READY'si):**
+
+| Kanal | Yön | Ne işe yarar |
+|-------|-----|--------------|
+| **AW** | Master→Slave | "Bu adrese yazacağım" (AWADDR) |
+| **W** | Master→Slave | "Veri bu" (WDATA, WSTRB) |
+| **B** | Slave→Master | "Yazdım, cevap OK" (BRESP) |
+| **AR** | Master→Slave | "Bu adresi oku" (ARADDR) |
+| **R** | Slave→Master | "İşte veri" (RDATA, RRESP) |
+
+- **Yazma:** AW + W + B (3 kanal sırayla)
+- **Okuma:** AR + R (2 kanal)
+
+**Response kodları (BRESP, RRESP) — 2 bit:**
+- `00` OKAY (normal başarılı)
+- `01` EXOKAY (exclusive — kullanmayız)
+- `10` SLVERR (slave hatası)
+- `11` DECERR (adres hiçbir slave'e ait değil)
+
+**Register file + adres decoding:** Slave'in arkasında 32-bit register'lar
+vardır. Adresin alt bit'leri hangi register'a erişildiğini seçer:
+```
+0x00 → MULTI_CLICK_WINDOW_MS (rw)
+0x04 → LONG_PRESS_MS         (rw)
+0x08 → DEBOUNCE_MS           (rw)
+0x0C → FIFO_STATUS           (ro)
+```
+Linux `/dev/mem` ile sanki RAM'e erişir gibi yazar/okur. AXI-Lite Slave bu
+adresleri decode edip ilgili register'a yönlendirir.
+
+**AXI Full vs AXI-Lite:**
+- Lite: tek transaction, sırayla bitmek zorunda, basit
+- Full: burst, out-of-order, transaction ID — DMA için, Faz 8'de lazım olabilir
+
+**Out-of-order Lite'ta yok** — her transaction sırayla bitmeli.
+
+
+## DE0-Nano-SoC HPS DDR3 Ayarları (Platform Designer)
+
+Bu bölüm, `07_axi_button_gesture/soc_system.qsys` içindeki **Arria V/Cyclone V
+Hard Processor System** IP'sinin HPS DDR3 ayarlarının gerekçesidir. Amaç
+değerleri ezberlemek değil; her birinin kaynağını, hesaplandığı yeri ve
+board-level varsayım olup olmadığını ayırmaktır.
+
+### Kaynak ve güven sınırı
+
+
+| Kaynak sınıfı | Bu projede neyi belirler? | Doğrudan mı, hesap mı? |
+|---|---|---|
+| Terasic **User Manual** | HPS DDR3'ün `1 GB`, `2 x 256M x 16`, `32-bit` ve `400 MHz target` oluşu | Doğrudan board bilgisi |
+| Terasic **şeması / PCB tasarımı** | Hangi HPS-DDR pininin hangi çip pinine gittiği, iki x16 çipin aynı command/address hattını paylaşması | Doğrudan topoloji bilgisi; iz gecikmeleri şemadan hesaplanmaz |
+| DDR3 çip **datasheet'i** | Bank/row/column geometrisi, voltage, DDR3 mode-register seçenekleri ve minimum timing sınırları | Doğrudan çip bilgisi |
+| DE0-Nano-SoC **referans Platform Designer yapılandırması** | Bu kart için seçilmiş CAS/ODT/drive-strength, HPS PLL referansı, tRFC ve board-skew değerleri | Hazır doğrulanmış board profili; genel kural değildir |
+| Buradaki **hesaplar** | `16+16=32 bit`, kapasite ve `400 MHz x 2 = 800 MT/s` dönüşümü | Yukarıdaki gerçeklerden türetilir |
+
+Önemli sınır: User Manual kartın bellek kapasitesini, genişliğini ve hedef
+frekansını verir; fakat **tek başına** bütün mode-register, ODT ve PCB-skew
+sayısını vermez. Bu ikinci grup için çip datasheet'i ve DE0-Nano-SoC'ye ait
+referans Platform Designer profili gerekir. `0.6 ns` gibi skew değerlerini
+kartın şemasına bakıp biz hesaplamadık; bunlar reference-board değerleridir.
+Kart revizyonu veya bellek çip işareti farklıysa, önce şema ve çip datasheet'i
+tekrar doğrulanmalıdır.
+
+- **Kart gerçeği:** DE0-Nano-SoC HPS belleği, tek address/command bus üzerinde
+  çalışan **iki adet `256M x 16` DDR3** çiptir. Toplam kapasite 1 GB, HPS veri
+  yolu 32 bittir ve hedef bellek clock'u 400 MHz'dir.
+- **Çip verisi:** `256M x 16` DDR3 organizasyonu, 8 internal bank; 15 row
+  address bit; 10 column address bit; 3 bank-address biti gerektirir.
+- **Hesap:** DDR olduğu için veri hem rising hem falling edge'de aktarılır:
+  `400 MHz clock x 2 = 800 MT/s`. Bu nedenle IP'deki speed grade `800 MHz`
+  (DDR3-800 etkin veri hızı sınıfı) iken gerçek memory clock `400 MHz`dir.
+- **Board-level değerler:** ODT, output drive strength ve PCB skew değerleri
+  salt VHDL'den hesaplanmaz. Bunlar kartın iz topolojisi/sinyal bütünlüğü için
+  DE0-Nano-SoC referans yapılandırmasından alınır.
+
+Referanslar: [Terasic DE0-Nano-SoC User Manual](https://www.terasic.com.tw/attachment/archive/954/DE0-Nano-SoC_User_manual_rev.D0.pdf),
+[DE0-Nano-SoC Design Guide](https://www.scribd.com/document/417343940/SoC-FPGA-Design-Guide-DE0-Nano-SoC-Edition).
+
+### Fiziksel bellek yapısı
+
+```
+HPS 32-bit data bus
+├─ DQ[15:0]  -> DDR3 chip 0 (256M x 16 = 512 MB)
+└─ DQ[31:16] -> DDR3 chip 1 (256M x 16 = 512 MB)
+
+Toplam: 1 GB, tek 32-bit rank
+```
+
+İki çip paralel çalışır: aynı address/command hattını ve aynı `CS_n` (chip
+select) sinyalini alırlar; biri kelimenin alt, diğeri üst 16 bitini sağlar.
+Bu yüzden:
+
+| Platform Designer alanı | Değer | Gerekçe |
+|---|---:|---|
+| Total interface width | 32 | `16 + 16` bit, iki çip paralel |
+| Chip select/depth expansion | 1 | Tek rank; iki çip genişlik için birlikte seçilir |
+| Number of clocks | 1 | Tek diferansiyel CK/CK# clock çifti |
+| DQS groups | 4 (otomatik) | Her DQS grubu 8 bit: `32 / 8 = 4` |
+| Enable DM pins | Açık | 32-bit yolun dört byte-mask hattı vardır |
+| DQS# Enable | Açık | DDR3 diferansiyel DQS/DQS# strobe kullanır |
+
+**Depth expansion** ek rank eklemek demektir; genişliği değil kapasiteyi
+büyütür. Örneğin iki rank olsaydı `CS0` bir çift x16 çipi, `CS1` ikinci çift
+x16 çipi seçerdi. Bu kartta sadece bir rank bulunduğundan değer 1'dir.
+
+Her DDR3 çipinin kendi içinde 8 bank vardır; iki çip aynı `BA[2:0]` bank
+adresini aldığı için bunlar 16 bağımsız bank oluşturmaz. Bir komutta her iki
+çipin aynı numaralı bankı çalışır ve HPS bunu 32-bit mantıksal bank olarak
+görür.
+
+```
+Her chip: 32M x 16 x 8 bank
+          2^15 row x 2^10 column x 2^3 bank x 16 bit
+        = 2^28 adet 16-bit konum = 256M x 16
+```
+
+Bu nedenle row address width=15, column address width=10 ve bank-address
+width=3 girilir.
+
+### Girilen DDR3 parametreleri
+
+| Alan | Değer | Nereden gelir? | Nasıl seçildi? |
+|---|---:|---|---|
+| Protocol | DDR3 | User Manual | Karttaki bellek teknolojisi doğrudan belirtilir |
+| Memory clock | 400 MHz | User Manual + referans profil | Manual target speed'i verir; profil HPS IP'de uygulanacak değeri doğrular |
+| PLL reference clock | 25 MHz | Kartın HPS 25 MHz clock bağlantısı + referans profil | HPS'ye fiziksel 25 MHz kaynak bağlıdır; profil bu kaynağı DDR PLL ref olarak seçer |
+| Supply / I/O | 1.5 V DDR3 / SSTL-15 | Çip datasheet'i + QSF/board I/O standardı | Elektrik standardıdır, performans tercihi değildir |
+| Vendor | Other | Platform Designer seçimi | Birebir hazır device preset'i yerine datasheet/reference değerleri elle girilir; bu çip üreticisinin “Other” olduğu anlamına gelmez |
+| Device speed grade | 800 MHz | Çip datasheet'i + referans profil | Çipin DDR3-800 sınıfı; çalışma clock'u değildir |
+| CS/depth | 1 | User Manual + şema topolojisi | İki x16 çip genişlik için paraleldir, ikinci rank yoktur |
+| Row / column / bank | 15 / 10 / 3 | Çip datasheet'i | `32M x16 x8 bank` iç geometrisinden gelir |
+
+### Mode register / initialization seçenekleri
+
+Bu seçenekler resetten sonra HPS controller'ın DDR3 mode register'larına
+yazdığı çalışma biçimleridir.
+
+| Ayar | Değer | Nereden gelir? | Anlamı |
+|---|---|---|---|
+| Mirror addressing | 0 | Şema/topoloji | İkinci rank adres çaprazlaması yok; tek rank |
+| Burst length | Burst chop 4 or 8 | DDR3 datasheet + referans profil | Controller 4 veya 8 transferlik burst seçebilir |
+| Read burst type | Sequential | Referans profil | Burst adresi ardışık ilerler |
+| DLL precharge power down | DLL off | Referans profil | Sadece precharge power-down modundaki DLL davranışı; normal çalışmada DLL'i küresel kapatmaz |
+| CAS latency | 7 | Datasheet timing tablosu + 400 MHz çalışma noktası | READ ile ilk veri arasındaki 7 clock; 400 MHz'de 17.5 ns |
+| Output drive strength | RZQ/6 | PCB/sinyal bütünlüğü referans profili | Yaklaşık 40 ohm çıkış empedansı; PCB yansımalarını azaltır |
+| ODT Rtt nominal | RZQ/6 | PCB/sinyal bütünlüğü referans profili | Dahili sonlandırma empedansı; sinyal bütünlüğü |
+| Auto self-refresh | Manual | Referans profil | Self-refresh girişini HPS/controller yönetir |
+| Self-refresh temperature | Normal | Datasheet + referans profil | Normal sıcaklık refresh profili |
+| Write CAS latency | 7 | Datasheet timing tablosu + 400 MHz çalışma noktası | WRITE veri zamanlaması için 7 clock |
+| Dynamic ODT | Off | PCB/sinyal bütünlüğü referans profili | Yazma sırasında değişken ODT kullanılmaz |
+
+### Memory timing
+
+DDR3 erişimi bir row'u açıp (ACTIVATE), o row içinden okuyup/yazıp, gerekince
+kapatma (PRECHARGE) şeklindedir:
+
+```
+ACTIVATE --tRCD--> READ/WRITE --tRTP veya tWR--> PRECHARGE --tRP--> sonraki ACTIVATE
+       \------------------------- tRAS ---------------------------/
+```
+
+| Parametre | Değer | Nereden gelir? | Anlamı |
+|---|---:|---|---|
+| tINIT | 500 us | DDR3 datasheet | Güç/reset sonrası ilk DDR komutundan önce bekleme |
+| tMRD | 4 cycles | DDR3 datasheet | Mode register yazımından sonraki bekleme |
+| tRAS | 35.0 ns | DDR3 datasheet | Açılan row'un kapatılmadan önce açık kalma süresi |
+| tRCD | 13.75 ns | DDR3 datasheet | ACTIVATE'ten READ/WRITE'a bekleme |
+| tRP | 13.75 ns | DDR3 datasheet | PRECHARGE'tan sonraki ACTIVATE'a bekleme |
+| tREFI | 7.8 us | DDR3 datasheet | Ortalama refresh komutu aralığı |
+| tRFC | 300.0 ns | DDR3 datasheet, 4 Gbit yoğunluk | Refresh süresi; refresh sırasında bellek meşguldür |
+| tWR | 15.0 ns | DDR3 datasheet | Yazma sonrası PRECHARGE öncesi bekleme |
+| tWTR | 4 cycles | DDR3 datasheet | Yazma sonrası okumaya geçiş beklemesi |
+| tFAW | 37.5 ns | DDR3 datasheet | Dört ACTIVATE için akım sınırı penceresi |
+| tRRD | 7.5 ns | DDR3 datasheet | Farklı banklarda iki ACTIVATE arası bekleme |
+| tRTP | 7.5 ns | DDR3 datasheet | Okuma sonrası PRECHARGE öncesi bekleme |
+
+Diğer PHY timing değerleri (`tIS`, `tIH`, `tDS`, `tDH`, `tDQSQ`, `tQH`,
+`tDQSCK`, `tDQSS`, `tQSH`, `tDSH`, `tDSS`) DDR clock/data/DQS strobe
+kenarları arasındaki setup-hold sınırlarıdır. Referans yapılandırmadaki
+değerleri doğrudan kullanılır.
+
+### Board Settings
+
+- **Setup and Hold Derating:** `Use Altera's default settings`
+- **Channel Signal Integrity:** `Use Altera's default settings`
+- **Board skews:** `CK=0.6 ns`, `DQS=0.6 ns`, `CK-DQS=-0.01..+0.01 ns`,
+  DQS group içi/arası skew=`0.02 ns`, DQ-DQS ortalama=`0 ns`,
+  address/command bus skew=`0.02 ns`.
+
+Bu değerler PCB iz uzunluğu, empedans ve yansıma etkilerinin timing analizine
+katılmasını sağlar. Sadece bu kartın reference-board değerleri olarak
+kullanılmalıdır; başka kartta veya PCB değişikliğinde HyperLynx/sinyal
+bütünlüğü analizi ya da kart üreticisinin değerleri gerekir.
+
+### Tekrar kurulum kısa akışı (HPS + Platform Designer)
+
+Bu sıra, `07_axi_button_gesture` projesindeki ilk HPS-to-FPGA AXI-Lite
+bağlantısını tekrar oluşturmak için kısa kontrol listesidir:
+
+```
+Quartus projesi (top-level = system_top)
+  -> Tools > Platform Designer
+  -> File > Save As > soc_system.qsys
+  -> Clock Source: clk + reset export
+  -> Arria V/Cyclone V Hard Processor System ekle (hps_0)
+  -> FPGA Interfaces:
+       FPGA-to-HPS = Unused
+       HPS-to-FPGA = Unused
+       Lightweight HPS-to-FPGA = 32-bit
+       f2h_sdram0 portunu kaldır
+       MPU standby/event'i kapat
+  -> Peripheral Pins:
+       SDIO = HPS I/O Set 0, 4-bit Data
+       UART0 = HPS I/O Set 0, No Flow Control
+  -> SDRAM: bu bölümdeki DDR3 parametrelerini uygula
+  -> h2f_lw_axi_clock -> clk_0.clk bağla
+  -> h2f_lw_axi_master export adı = h2f_lw_axi
+  -> h2f_reset export adı = h2f_reset
+  -> Save
+  -> Generate HDL: synthesis = VHDL, simulation = None, .bsf = kapalı
+  -> soc_system/synthesis/soc_system.qip dosyasını Quartus projesine ekle
+  -> system_top içinde soc_system'i instance et ve export edilmiş AXI master'ı
+     mevcut axi_lite_slave instance'ına bağla
+```
+
+### AXI3 MMIO register-bank mimarisi (07_axi_button_gesture)
+
+Cyclone V HPS'nin `h2f_lw_axi` export'u **AXI3 master**'dir. Bu, Platform
+Designer'da AXI4/AXI3 seÃ§ilerek deÄŸiÅŸtirilebilen bir IP tercihi deÄŸil; HPS
+hard-IP iÃ§indeki bridge'in arayÃ¼zÃ¼dÃ¼r. Bu nedenle ilk HPSâ€“FPGA MMIO projesinde
+doÄŸrudan AXI3 slave kullanÄ±lÄ±r:
+
+```text
+Linux / HPS
+  -> h2f_lw_axi (Cyclone V HPS AXI3 master)
+  -> axi3_mmio_regbank.vhd (genel, tekrar kullanÄ±labilir AXI3 slave)
+  -> uygulama mantÄ±ÄŸÄ± (bu projede button_gesture)
+```
+
+`axi3_mmio_regbank.vhd` uygulamadan baÄŸÄ±msÄ±zdÄ±r. `G_REG_COUNT` generic'i,
+sentez anÄ±nda register sayÄ±sÄ±nÄ± belirler; bu projede `16` seÃ§ilmiÅŸtir. Her
+register 32 bittir ve `4 * indeks` byte offset'indedir. Bu nedenle register 0
+`+0x00`, register 1 `+0x04`, ... register 15 `+0x3C` adresindedir.
+
+ModÃ¼lÃ¼n kontrollÃ¼ olarak desteklediÄŸi AXI3 alt kÃ¼mesi:
+
+- 32-bit, hizalÄ± tek-beat eriÅŸim (`AxSIZE=2`, `AxLEN=0`)
+- BaÄŸÄ±msÄ±z AW ve W kanallarÄ±; adres veya veri Ã¶nce gelebilir
+- HPS'nin AXI ID'sini `BID`/`RID` cevaplarÄ±nda geri verme
+- `WSTRB` ile byte bazlÄ± yazma
+- read-only bit maskesi, FPGA tarafÄ±ndan readback override ve write-pulse
+  ile W1C/command davranÄ±ÅŸÄ±
+
+Burst veya yanlÄ±ÅŸ geniÅŸlik isteÄŸi sessizce yanlÄ±ÅŸ yorumlanmaz; `SLVERR`
+cevabÄ± Ã¼retilir. Bu kÄ±sÄ±tlama kontrol/status register'Ä± olan bir MMIO
+Ã§evre birimi iÃ§in bilinÃ§li ve normaldir. BÃ¼yÃ¼k blok veri/DMA gereksiniminde
+ayrÄ± bir AXI3/AXI4-Full veya Avalon/DMA mimarisi tasarlanÄ±r.
+
+Bu proje iÃ§in HPS lightweight bridge taban adresi `0xFF200000`'dir:
+
+```text
+0xFF200000 + 0x00 : debounce_ms                 (RW)
+0xFF200000 + 0x04 : long_press_ms               (RW)
+0xFF200000 + 0x08 : multi_click_window_ms       (RW)
+0xFF200000 + 0x0C : repeat_start_ms              (RW)
+0xFF200000 + 0x10 : repeat_end_ms                (RW)
+0xFF200000 + 0x14 : repeat_ramp_ms               (RW)
+0xFF200000 + 0x18 : button_status               (RO, sticky)
+0xFF200000 + 0x1C : event_clear                 (WO, write-one-to-clear)
+0xFF200000 + 0x20..0x3C : genel amaÃ§lÄ± RW alan
+```
+
+`tb_axi3_mmio_regbank.vhd` Questa simÃ¼lasyonunda ÅŸunlarÄ± kontrol eder:
+W kanalÄ±nÄ±n AW'den Ã¶nce gelmesi, byte-enable yazma, read-only alanÄ±n korunmasÄ±
+ve hatalÄ± burst isteÄŸinin `SLVERR` ile reddedilmesi.
+
+#### Quartus 25.1 + WSL notu
+
+HPS DDR3 HDL üretimi `Nios II Command Shell -> make all` çağrısını yapar.
+Quartus 25.1 Standard bu çağrı için WSL ister. Hata `hps_AC_ROM.hex` bulunamadı
+veya `Nios II Command Shell.bat ... make all` biçimindeyse önce şunları kontrol et:
+
+```powershell
+wsl -l -v
+wsl --set-default Ubuntu
+```
+
+`Ubuntu` satırının başında `*` görünmelidir. `docker-desktop` varsayılan
+dağıtımsa Nios II shell doğru Linux build ortamını bulamayabilir. Ubuntu hiç
+kurulu değilse yönetici PowerShell'de `wsl --install -d Ubuntu` çalıştırılır;
+ilk Ubuntu açılışında kullanıcı hesabı oluşturulur.
+
+Ubuntu terminalini Başlat menüsünden **Ubuntu** uygulamasıyla veya PowerShell'de
+`wsl` komutuyla aç. Quartus'un WSL içindeki Nios shell betiği ayrıca `wsl`,
+`make` ve `dos2unix` araçlarını arar. Bunları Ubuntu içinde kur:
+
+```bash
+sudo apt update
+sudo apt install -y wsl make dos2unix
+
+# Her üç aracın da bulunduğunu doğrula:
+which wsl
+which make
+which dos2unix
+```
+
+Her `which` komutu örneğin `/usr/bin/wsl`, `/usr/bin/make` ve
+`/usr/bin/dos2unix` gibi bir yol döndürmelidir. `wsl` paketi bulunamazsa
+alternatif paket adı `wslu` olabilir:
+
+```bash
+sudo apt install -y wslu make dos2unix
+```
+
+Sonra Quartus/Platform Designer kapatılıp yeniden açılır ve `Generate HDL`
+tekrar denenir. Başarılı sonuçta logda şu satır görülür:
+
+```text
+Info: qsys-generate succeeded.
+```
+
+`Configuration/HPS-to-FPGA user 0 clock ... 97.368421 MHz` uyarısı bu ilk
+tasarımda engel değildir: HPS-to-FPGA user clock'ları etkin değildir ve AXI
+bridge `clk_0` üzerinden `CLOCK_50` domain'inde çalışır.
