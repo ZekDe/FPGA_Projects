@@ -1,0 +1,69 @@
+Reading pref.tcl
+
+# 2025.2
+
+# ** Note: (vsim-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# vsim -c -do "run 3 us; quit -f" -t 1ps work.tb_axi_lite_slave 
+# Start time: 17:10:37 on Jul 20,2026
+# ** Note: (vsim-8009) Loading existing optimized design _opt1
+# //  Questa Altera Starter FPGA Edition-64
+# //  Version 2025.2 win64 May 31 2025
+# //
+# // Unpublished work. Copyright 2025 Siemens
+# //
+# // This material contains trade secrets or otherwise confidential information
+# // owned by Siemens Industry Software Inc. or its affiliates (collectively,
+# // "SISW"), or its licensors. Access to and use of this information is strictly
+# // limited as set forth in the Customer's applicable agreements with SISW.
+# //
+# // This material may not be copied, distributed, or otherwise disclosed outside
+# // of the Customer's facilities without the express written permission of SISW,
+# // and may not be used in any way not expressly authorized by SISW.
+# //
+# Loading std.standard
+# Loading std.textio(body)
+# Loading ieee.std_logic_1164(body)
+# Loading ieee.numeric_std(body)
+# Loading work.tb_axi_lite_slave(sim)#1
+# run 3 us
+# ** Note: TEST 1: 0x00 (DEBOUNCE_MS) = 100 yaziliyor
+#    Time: 100 ns  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: TEST 1: write tamam
+#    Time: 155 ns  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: TEST 2: 0x04 (LONG_PRESS_MS) = 2000 yaziliyor
+#    Time: 155 ns  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: TEST 2: write tamam
+#    Time: 215 ns  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: TEST 3: diger config register'lari
+#    Time: 215 ns  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: TEST 3: tum yazma islemleri tamam
+#    Time: 455 ns  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: WRITE TESTLERI BITTI
+#    Time: 555 ns  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: READ-BACK basliyor
+#    Time: 1050 ns  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   0x00 DEBOUNCE_MS = 100 OK
+#    Time: 1085001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   0x04 LONG_PRESS_MS = 2000 OK
+#    Time: 1125001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   0x08 MULTI_CLICK_WINDOW_MS = 600 OK
+#    Time: 1165001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   0x0C REPEAT_START_MS = 800 OK
+#    Time: 1205001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   0x10 REPEAT_END_MS = 150 OK
+#    Time: 1245001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   0x14 REPEAT_RAMP_MS = 2000 OK
+#    Time: 1285001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   0x18 BUTTON_STATUS = 0xAB OK
+#    Time: 1325001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   0x1C FIFO_STATUS = 0x03 OK
+#    Time: 1365001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: ========================================
+#    Time: 1365001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note:   TUM READ-BACK TESTLERI GECTI
+#    Time: 1365001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+# ** Note: ========================================
+#    Time: 1365001 ps  Iteration: 0  Instance: /tb_axi_lite_slave
+#  quit -f
+# End time: 17:10:38 on Jul 20,2026, Elapsed time: 0:00:01
+# Errors: 0, Warnings: 0

@@ -1,0 +1,15 @@
+Questa Altera Starter FPGA Edition-64 vcom 2025.2 Compiler 2025.05 May 31 2025
+Start time: 17:10:07 on Jul 20,2026
+vcom -2008 -work work ../axi_lite_slave.vhd tb_axi_lite_slave.vhd 
+** Note: (vcom-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+-- Loading package STANDARD
+-- Loading package TEXTIO
+-- Loading package std_logic_1164
+-- Loading package NUMERIC_STD
+-- Compiling entity axi_lite_slave
+-- Compiling architecture rtl of axi_lite_slave
+-- Compiling entity tb_axi_lite_slave
+-- Compiling architecture sim of tb_axi_lite_slave
+-- Loading entity axi_lite_slave
+End time: 17:10:08 on Jul 20,2026, Elapsed time: 0:00:01
+Errors: 0, Warnings: 0
