@@ -1,4 +1,46 @@
 ==============================================================================
+
+GUNCEL DURUM — 2026-07-23
+-------------------------
+Platform Designer/HPS baglantisi olusturuldu ve HDL basariyla generate edildi:
+  - soc_system.qsys: HPS, 1 GB DDR3, SDIO/UART ve lightweight HPS-to-FPGA bridge
+  - soc_system/synthesis/soc_system.qip Quartus projesine eklendi.
+  - HPS'nin export ettigi lightweight bridge AXI3'tur; bu Cyclone V HPS hard-IP
+    mimarisinin sabit arayuzudur, Platform Designer tercihi degildir.
+
+Yeni MMIO mimarisi uygulanmistir:
+  HPS/Linux -> h2f_lw_axi (AXI3) -> axi3_mmio_regbank -> button_gesture
+
+  - MyLibs/mmio_pkg.vhd: ortak 32-bit word/array tipleri.
+  - MyLibs/axi3_mmio_regbank.vhd: tekrar kullanilabilir, G_REG_COUNT generic'li
+    AXI3 slave/register bank. Ilk sentezde 16 x 32-bit register kullaniliyor.
+  - Eski axi_lite_slave.vhd korunuyor fakat bu donanim yolunda kullanilmiyor.
+  - AXI3 register bank testi (AW/W sirasi, WSTRB, RO maske, burst hatasi)
+    Questa'da basariyla calisti: AXI3 MMIO REGBANK TEST PASSED.
+  - Yeni system_top.vhd, soc_system'i instantiate eder; HPS DDR3/SD/UART
+    fiziksel pinlerini ve AXI3 master'i genel register-bank'a baglar.
+
+GUNCEL REGISTER HARITASI (HPS LW bridge tabani 0xFF200000)
+------------------------------------------------------------
+  +0x00 debounce_ms               RW
+  +0x04 long_press_ms             RW
+  +0x08 multi_click_window_ms     RW
+  +0x0C repeat_start_ms           RW
+  +0x10 repeat_end_ms             RW
+  +0x14 repeat_ramp_ms            RW
+  +0x18 button_status             RO, sticky event bits
+  +0x1C event_clear               WO, yazilan 1 bitleri status'tan temizler
+  +0x20 .. +0x3C                  8 adet genel amacli RW register
+
+SIRADAKI PRATIK ADIM
+--------------------
+  1. Quartus GUI'de Compile Design calistir; HPS DDR3 derlemesi uzun surebilir.
+  2. Pin Planner'da system_top'un HPS_DDR3_*, HPS_SD_* ve HPS_UART_* portlarinin
+     mevcut .qsf atamalariyla eslestigini kontrol et.
+  3. Basarili compile sonrasinda SOF'u karta yukle; LED ile button_gesture'in
+     FPGA-tarafli varsayilan ayarlarla calistigini gor.
+  4. Sonraki faz: HPS/Linux boot, lightweight bridge enable ve /dev/mem ile
+     0xFF200000 + register offset adreslerinden okuma/yazma testi.
   FPGA ile Donanım Tasarımı Öğrenme Yolculuğu — Durum Özeti
 ==============================================================================
 
@@ -33,9 +75,9 @@ Platform Designer çıktısını mevcut tasarıma bağlamak:
   5. Quartus compile; sonra kartta HPS/Linux aç ve `/dev/mem` ile config
      register yazma/status okuma testini yap.
 
-Not: `axi_lite_slave.vhd` kullanılmaya devam edecek. İlk entegrasyonda onu
-Platform Designer custom component'i yapmak yerine, HPS AXI master'ı export
-edilip top-level'da mevcut slave'e kablolanacak.
+Not: Bu eski plan geçersizdir. `axi_lite_slave.vhd` korunuyor ama aktif
+tasarımda kullanılmıyor; HPS'nin gerçek AXI3 master'i doğrudan genel
+`axi3_mmio_regbank.vhd` modülüne bağlanmıştır.
 
 Daha ilerisi (Faz 7-8): Linux tarafında UIO driver, sonra IMU SPI master.
 
