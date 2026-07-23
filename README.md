@@ -589,12 +589,8 @@ Quartus projesi (top-level = system_top)
      genel axi3_mmio_regbank instance'ına bağla
 ```
 
-### AXI3 MMIO register-bank mimarisi (07_axi_button_gesture)
+### AXI3 MMIO register-bank mimarisi (axi_button_gesture)
 
-Cyclone V HPS'nin `h2f_lw_axi` export'u **AXI3 master**'dir. Bu, Platform
-Designer'da AXI4/AXI3 seçilerek değiştirilebilen bir IP tercihi değil; HPS
-hard-IP içindeki bridge'in arayüzüdür. Bu nedenle ilk HPS–FPGA MMIO projesinde
-doğrudan AXI3 slave kullanılır:
 
 ```text
 Linux / HPS
